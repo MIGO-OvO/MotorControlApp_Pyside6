@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 import serial
@@ -12,12 +13,12 @@ ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("motor.control.v1"
 
 from serial.tools import list_ports
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
+    QApplication, QAbstractItemView, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
     QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout, QTreeWidget,
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
     QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex
 from PySide6.QtGui import QFont, QTextCursor, QIcon
 
 # 样式表
@@ -95,10 +96,55 @@ QTabWidget::pane {
     border: 0;
 }
 """
-
+DARK_MODE_STYLE = """
+QWidget {
+    font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
+    font-size: 18px;
+    color: #FFFFFF;
+    background-color: #1e1e1e;
+}
+QPushButton {
+    background-color: #1a53ff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    min-width: 80px;
+}
+QPushButton:hover {
+    background-color: #1644cc;
+}
+QPushButton:pressed {
+    background-color: #123399;
+}
+QComboBox, QLineEdit, QTextEdit {
+    border: 1px solid #444444;
+    border-radius: 6px;
+    padding: 6px;
+    background: #333333;
+    selection-background-color: #1a53ff;
+}
+QTreeWidget {
+    border: 1px solid #444444;
+    border-radius: 8px;
+    background: #333333;
+    alternate-background-color: #2a2a2a;
+}
+QStatusBar {
+    background: #1e1e1e;
+    border-top: 1px solid #444444;
+    color: #cccccc;
+}
+"""
 
 class PresetManager:
     PRESETS_FILE = "presets.json"
+
+    def __init__(self, win):
+        self.win = win
+
+    def __del__(self):
+        self.win = None
 
     @classmethod
     def load_presets(cls):
@@ -119,6 +165,56 @@ class PresetManager:
         except Exception as e:
             QMessageBox.critical(None, "保存错误", f"无法保存预设文件: {str(e)}")
 
+
+class DragDropTreeWidget(QTreeWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)  # 设置为内部移动模式
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
+        self.setIndentation(0)  # 删除缩进防止误操作
+        self.setRootIsDecorated(False)  # 隐藏根项装饰
+        self.setExpandsOnDoubleClick(False)  # 禁止双击展开
+        self.setDragDropOverwriteMode(True) # 禁止创建子项
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event):
+        """重写drop事件精确控制项目移动"""
+        dragged_item = self.currentItem()
+        if not dragged_item:
+            return
+
+        # 获取目标位置
+        drop_pos = event.position().toPoint()
+        target_item = self.itemAt(drop_pos)
+
+        # 计算插入位置
+        new_index = self.indexAt(drop_pos).row()
+        new_index = max(0, new_index) if new_index != -1 else self.topLevelItemCount()
+
+        # 执行移动逻辑
+        if dragged_item.parent() is None:  # 确保是顶级项
+            # 移除原始项目
+            source_index = self.indexOfTopLevelItem(dragged_item)
+            item = self.takeTopLevelItem(source_index)
+
+            # 插入到新位置
+            if new_index >= self.topLevelItemCount():
+                self.addTopLevelItem(item)
+            else:
+                self.insertTopLevelItem(new_index, item)
+
+            # 设置选中状态
+            self.setCurrentItem(item)
+
+        # 添加同步调用
+        parent_app = self.window()
+        if isinstance(parent_app, MotorControlApp):
+            parent_app.sync_automation_steps_order()
+
+        event.accept()
 
 class MotorStepConfig(QDialog):
     def __init__(self, parent, step_num, initial_params=None):
@@ -279,45 +375,61 @@ class AutomationThread(QThread):
     def __init__(self, parent, steps, loop_count, serial_port):
         super().__init__()
         self.parent = parent
-        self.steps = steps
+        self.steps = steps.copy()  # 使用副本避免原始数据修改
         self.loop_count = loop_count
         self.serial_port = serial_port
         self.running = True
         self.paused = False
+        self.lock = parent.serial_lock
 
     def run(self):
         current_loop = 1
         try:
             while self.running and (self.loop_count == 0 or current_loop <= self.loop_count):
-                if not self.serial_port.is_open:
-                    raise serial.SerialException("串口连接已断开")
+                with self.lock:
+                    if not self.serial_port or not self.serial_port.is_open:
+                        raise Exception("串口连接已断开")
 
-                while self.paused:
+                while self.paused and self.running:
                     time.sleep(0.1)
+                    self.msleep(100)  # 更友好的暂停处理
 
-                self.update_status.emit(f"自动化运行中（第{current_loop}次循环）...")
+                self.update_status.emit(f"自动运行中 (循环次数 {current_loop})...")
 
                 for step in self.steps:
                     if not self.running:
                         break
 
-                    # 发送指令
+                    # 生成指令前检查运行状态
                     command = self.parent.generate_command(step)
-                    self.serial_port.write(command.encode())
-                    self.parent.log(f"已发送指令: {command.strip()!r}")
+                    with self.lock:  # 加锁保证串口操作原子性
+                        try:
+                            if self.serial_port.is_open:
+                                self.serial_port.write(command.encode())
+                                self.serial_port.flush()  # 确保数据发送完成
+                        except Exception as e:
+                            self.error_occurred.emit(f"指令发送失败: {str(e)}")
+                            break
 
-                    time.sleep(step["interval"] / 1000)
+                    self.parent.log(f"已发送指令: {command.strip()!r}")
+                    # 增加延时防止CPU过载
+                    interval = step.get("interval", 0) / 1000
+                    wait_time = max(0.01, interval)  # 最小间隔10ms
+                    start = time.time()
+                    while (time.time() - start) < wait_time and self.running:
+                        time.sleep(0.001)
 
                 current_loop += 1
 
         except Exception as e:
-            self.error_occurred.emit(f"自动化运行失败: {str(e)}")
+            self.error_occurred.emit(f"自动运行失败: {str(e)}")
             traceback.print_exc()
         finally:
             self.finished.emit()
 
     def stop(self):
         self.running = False
+        self.wait(100)
 
     def pause(self):
         self.paused = True
@@ -333,6 +445,7 @@ class MotorControlApp(QMainWindow):
         self.automation_steps = []
         self.current_step = 0
         self.running = False
+        self.serial_lock = threading.Lock()
         self.loop_count = 0
         self.presets = PresetManager.load_presets()
         self.automation_thread = None
@@ -627,8 +740,12 @@ class MotorControlApp(QMainWindow):
         layout.addWidget(preset_frame)
 
         # 步骤表格
-        self.steps_table = QTreeWidget()
+        self.steps_table = DragDropTreeWidget()
         self.steps_table.setHeaderLabels(["编号", "名称", "参数配置", "间隔(ms)"])
+        self.steps_table.setRootIsDecorated(False)  # 隐藏根节点展开图标
+        self.steps_table.setUniformRowHeights(True)  # 统一行高
+        self.steps_table.setSortingEnabled(False)  # 禁用排序
+        self.steps_table.setEditTriggers(QTreeWidget.EditTrigger.NoEditTriggers)# 设置不可编辑
         for i in range(self.steps_table.columnCount()):
             header_item = self.steps_table.headerItem()
             header_item.setTextAlignment(i, Qt.AlignmentFlag.AlignCenter)
@@ -667,6 +784,75 @@ class MotorControlApp(QMainWindow):
         hbox.addStretch()
         layout.addWidget(loop_frame)
 
+    def sync_automation_steps_order(self):
+        """精确同步步骤顺序"""
+        try:
+            # 清空旧数据时保留有效项
+            valid_items = [
+                (self.steps_table.topLevelItem(i), i)
+                for i in range(self.steps_table.topLevelItemCount())
+                if self.steps_table.topLevelItem(i) is not None
+            ]
+
+            # 按显示顺序重建数据
+            new_steps = []
+            for idx, (item, _) in enumerate(valid_items, 1):
+                if not item:
+                    continue
+                step_data = item.data(0, Qt.UserRole)
+                if step_data:  # 有效性检查
+                    new_steps.append(step_data)
+                    item.setText(0, str(idx))  # 强制刷新编号
+
+            # 重建数据内存
+            self.automation_steps.clear()
+            self.automation_steps.extend(new_steps)
+
+            # 清除无效空白项并重新加载表格
+            self.steps_table.clear()
+            for step in self.automation_steps:
+                self._add_step_to_table(step)
+
+            self.log("步骤顺序已调整")
+        except Exception as e:
+            self.log(f"同步步骤顺序失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"同步步骤顺序失败: {str(e)}")
+
+    def _add_step_to_table(self, step):
+        """安全的表格项添加方法"""
+        try:
+            current_count = self.steps_table.topLevelItemCount()
+            idx = current_count + 1
+
+            # 参数解析逻辑
+            params_desc = []
+            for motor in ["X", "Y", "Z", "A"]:
+                cfg = step.get(motor, {})
+                if cfg.get("enable") == "E":
+                    desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
+                    params_desc.append(desc)
+            params_str = " | ".join(params_desc) if params_desc else "所有电机脱机"
+            interval = step.get("interval", 0)
+            name = step.get("name", f"步骤 {idx}")
+
+            # 创建表格项
+            item = QTreeWidgetItem([
+                str(idx),
+                name,
+                params_str,
+                str(interval)
+            ])
+            item.setData(0, Qt.UserRole, step)
+
+            # 确保属性设置
+            for i in range(self.steps_table.columnCount()):
+                item.setTextAlignment(i, Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsDropEnabled)  # 禁止作为拖放目标
+
+            self.steps_table.addTopLevelItem(item)
+
+        except Exception as e:
+            self.log(f"步骤添加错误: {str(e)}")
     def edit_step(self, item, column):
         step_index = self.steps_table.indexOfTopLevelItem(item)
         if step_index >= 0 and step_index < len(self.automation_steps):
@@ -735,7 +921,18 @@ class MotorControlApp(QMainWindow):
         try:
             port = self.port_combo.currentText()
             baudrate = int(self.baud_combo.currentText())
-            self.serial_port = serial.Serial(port, baudrate, timeout=1)
+            self.serial_port = serial.Serial(
+                port=port,
+                baudrate=baudrate,
+                timeout=2,  # 增加读超时
+                write_timeout=2,  # 增加写超时
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                rtscts=False,  # 禁用硬件流控
+                dsrdtr=False
+            )
+            #self.serial_port.set_buffer_size(rx_size=1024, tx_size=1024)
             self.connect_btn.setText("关闭串口")
             self.log(f"串口已连接 {port}@{baudrate}")
             self.status_bar.showMessage(f"已连接 {port}@{baudrate}")
@@ -776,6 +973,7 @@ class MotorControlApp(QMainWindow):
             QMessageBox.critical(self, "错误", "请先打开串口连接！")
             return False
         try:
+            self.serial_port.write_timeout = 1
             self.serial_port.write(command.encode())
             self.log(f"已发送指令: {command.strip()}")
             return True
@@ -846,46 +1044,44 @@ class MotorControlApp(QMainWindow):
         event.accept()
 
     def stop_automation(self):
-        if self.automation_thread:
+        if self.automation_thread is not None:
+            # 请求线程停止
             self.automation_thread.stop()
+            # 确保线程安全结束
+            if self.automation_thread.isRunning():
+                self.automation_thread.quit()
+                self.automation_thread.wait(1000)
+            self.automation_thread = None
         self.running = False
         self.log("自动化运行已停止")
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                self.serial_port.reset_input_buffer()
+                self.serial_port.reset_output_buffer()
+            except:
+                pass
 
     def on_automation_finished(self):
         self.status_bar.showMessage("自动化运行完成")
         self.log("自动化运行已结束")
+        # 清理线程引用
+        if self.automation_thread is not None:
+            self.automation_thread = None
+
 
     def update_steps_table(self):
         try:
-            self.steps_table.clear()  # 清空现有内容
-            # 遍历所有步骤生成显示项
-            for idx, step in enumerate(self.automation_steps, 1):
-                params_desc = []
-                # 遍历每个电机配置
-                for motor in ["X", "Y", "Z", "A"]:
-                    cfg = step.get(motor, {})
-                    if cfg.get("enable") == "E":
-                        desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
-                        params_desc.append(desc)
-                # 生成显示文本
-                params_str = " | ".join(params_desc) if params_desc else "所有电机脱机"
-                interval = step.get("interval", 0)
-                name = step.get("name", f"步骤 {idx}")  # 获取步骤名称，如果不存在则使用默认名称
-                # 创建表格项
-                item = QTreeWidgetItem([
-                    str(idx),
-                    name,
-                    params_str,
-                    str(interval)
-                ])
-                # 设置每个列的内容居中显示
-                for i in range(self.steps_table.columnCount()):
-                    item.setTextAlignment(i, Qt.AlignmentFlag.AlignCenter)
-                self.steps_table.addTopLevelItem(item)
-            self.log(f"已更新步骤列表，当前步骤数：{len(self.automation_steps)}")
-        except Exception as e:
-            self.log(f"更新步骤列表失败: {str(e)}")
+            # 先清空现有数据
+            self.steps_table.clear()
+            current_steps = [s for s in self.automation_steps if isinstance(s, dict)]  # 有效性过滤
 
+            for idx, step in enumerate(current_steps, 1):
+                self._add_step_to_table(step)
+
+            self.log(f"更新步骤列表，成功加载 {len(current_steps)} 项")
+
+        except Exception as e:
+            self.log(f"表格更新失败: {str(e)}")
 
     def save_manual_preset(self):
         try:
@@ -1037,10 +1233,7 @@ class MotorControlApp(QMainWindow):
     def clear_log(self):
         self.log_text.clear()
 
-    def closeEvent(self, event):
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
-        event.accept()
+
 
 
 if __name__ == "__main__":

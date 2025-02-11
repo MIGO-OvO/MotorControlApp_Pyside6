@@ -392,7 +392,7 @@
           "speed": "0",
           "angle": "0"
         },
-        "interval": 7000
+        "interval": 1000
       },
       {
         "name": "X",
