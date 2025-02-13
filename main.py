@@ -2,23 +2,33 @@
 import ctypes
 import json
 import os
+import queue
 import sys
 import threading
 import time
 import traceback
-import serial
+import weakref
 import resource
+import serial
+import platform
+if platform.system() == 'Windows':
+    # 提高Windows平台的时钟精度到1ms
+    from ctypes import windll
+    windll.winmm.timeBeginPeriod(1)
+
+
+from datetime import datetime
 
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("motor.control.v1")
 
 from serial.tools import list_ports
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
+    QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
     QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout, QTreeWidget,
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
     QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer
 from PySide6.QtGui import QFont, QTextCursor, QIcon
 
 # 样式表
@@ -96,46 +106,7 @@ QTabWidget::pane {
     border: 0;
 }
 """
-DARK_MODE_STYLE = """
-QWidget {
-    font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
-    font-size: 18px;
-    color: #FFFFFF;
-    background-color: #1e1e1e;
-}
-QPushButton {
-    background-color: #1a53ff;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 16px;
-    min-width: 80px;
-}
-QPushButton:hover {
-    background-color: #1644cc;
-}
-QPushButton:pressed {
-    background-color: #123399;
-}
-QComboBox, QLineEdit, QTextEdit {
-    border: 1px solid #444444;
-    border-radius: 6px;
-    padding: 6px;
-    background: #333333;
-    selection-background-color: #1a53ff;
-}
-QTreeWidget {
-    border: 1px solid #444444;
-    border-radius: 8px;
-    background: #333333;
-    alternate-background-color: #2a2a2a;
-}
-QStatusBar {
-    background: #1e1e1e;
-    border-top: 1px solid #444444;
-    color: #cccccc;
-}
-"""
+
 
 class PresetManager:
     PRESETS_FILE = "presets.json"
@@ -219,7 +190,7 @@ class DragDropTreeWidget(QTreeWidget):
 class MotorStepConfig(QDialog):
     def __init__(self, parent, step_num, initial_params=None):
         super().__init__(parent)
-        self.parent = parent
+        self.parent = weakref.ref(parent)
         self.step_params = initial_params or {}
         self.motors = ["X", "Y", "Z", "A"]
         self.setWindowTitle(f"步骤 {step_num} 参数配置")
@@ -371,76 +342,179 @@ class AutomationThread(QThread):
     update_status = Signal(str)
     error_occurred = Signal(str)
     finished = Signal()
+    progress_updated = Signal(int)  # 新增进度信号
 
     def __init__(self, parent, steps, loop_count, serial_port):
         super().__init__()
-        self.parent = parent
-        self.steps = steps.copy()  # 使用副本避免原始数据修改
+        self.parent_ref = weakref.ref(parent)
+        self.steps = self._deep_copy_steps(steps)
         self.loop_count = loop_count
-        self.serial_port = serial_port
-        self.running = True
-        self.paused = False
+        self.serial_port = serial_port  # 使用主线程的串口实例
+        self._running = threading.Event()
+        self._running.set()
+        self._paused = threading.Event()
+        self._current_step = 0
+        self._current_loop = 1
         self.lock = parent.serial_lock
 
-    def run(self):
-        current_loop = 1
+    def _deep_copy_steps(self, steps):
+        """安全的深拷贝方法"""
         try:
-            while self.running and (self.loop_count == 0 or current_loop <= self.loop_count):
-                with self.lock:
-                    if not self.serial_port or not self.serial_port.is_open:
-                        raise Exception("串口连接已断开")
-
-                while self.paused and self.running:
-                    time.sleep(0.1)
-                    self.msleep(100)  # 更友好的暂停处理
-
-                self.update_status.emit(f"自动运行中 (循环次数 {current_loop})...")
-
-                for step in self.steps:
-                    if not self.running:
-                        break
-
-                    # 生成指令前检查运行状态
-                    command = self.parent.generate_command(step)
-                    with self.lock:  # 加锁保证串口操作原子性
-                        try:
-                            if self.serial_port.is_open:
-                                self.serial_port.write(command.encode())
-                                self.serial_port.flush()  # 确保数据发送完成
-                        except Exception as e:
-                            self.error_occurred.emit(f"指令发送失败: {str(e)}")
-                            break
-
-                    self.parent.log(f"已发送指令: {command.strip()!r}")
-                    # 增加延时防止CPU过载
-                    interval = step.get("interval", 0) / 1000
-                    wait_time = max(0.01, interval)  # 最小间隔10ms
-                    start = time.time()
-                    while (time.time() - start) < wait_time and self.running:
-                        time.sleep(0.001)
-
-                current_loop += 1
-
+            return json.loads(json.dumps(steps))
         except Exception as e:
-            self.error_occurred.emit(f"自动运行失败: {str(e)}")
+            self.error_occurred.emit(f"步骤数据解析失败: {str(e)}")
+            return []
+
+    def run(self):
+        try:
+            while self._running.is_set() and self._should_continue():
+                try:
+                    self._execute_loop()
+                except serial.SerialException as e:
+                    self.error_occurred.emit(f"串口通信失败: {str(e)}")
+                    break
+                except Exception as e:
+                    self.error_occurred.emit(f"未知错误: {str(e)}")
+                    break
+        except Exception as e:
+            self.error_occurred.emit(f"线程初始化失败: {str(e)}")
             traceback.print_exc()
         finally:
             self.finished.emit()
 
+
+
+    def _should_continue(self):
+        """线程继续条件判断"""
+        if self.loop_count == 0:
+            return True
+        return self._current_loop <= self.loop_count
+
+    def _execute_loop(self):
+        """执行单个循环"""
+        self.update_status.emit(f"自动运行中 (循环 {self._current_loop}/{self.loop_count or '∞'})...")
+        self.progress_updated.emit(0)  # 重置进度
+
+        for step_idx, step in enumerate(self.steps):
+            if not self._running.is_set():
+                break
+
+            # 暂停处理
+            while self._paused.is_set():
+                time.sleep(0.1)
+
+            self._current_step = step_idx
+            self.progress_updated.emit(int((step_idx+1)/len(self.steps)*100))
+
+            if not self._send_step_command(step):
+                break
+
+            self._wait_interval(step.get("interval", 0))
+
+        self._current_loop += 1
+
+    def _send_step_command(self, step):
+        """发送步骤命令"""
+        try:
+            parent = self.parent_ref()
+            if not parent or not self.serial_port:
+                return False
+
+            command = parent.generate_command(step)
+            with self.lock:  # 使用主线程的串口锁
+                if not self.serial_port.is_open:
+                    self.error_occurred.emit("串口连接已断开")
+                    return False
+
+                try:
+                    self.serial_port.write(command.encode('utf-8'))
+                    self.serial_port.flush()
+                    parent.log(f"指令已发送: {command.strip()}")
+                    return True
+                except (serial.SerialException, OSError) as e:
+                    self.error_occurred.emit(f"指令发送失败: {str(e)}")
+                    return False
+
+        except Exception as e:
+            self.error_occurred.emit(f"发送指令异常: {str(e)}")
+            return False
+
+    def _wait_interval(self, interval_ms):
+        """超高精度间隔等待（误差<3ms）"""
+        interval = interval_ms / 1000  # 转换为秒
+        if interval <= 0:
+            return
+
+        # 使用最高精度时钟
+        get_time = time.perf_counter
+        deadline = get_time() + interval
+        error_correction = 0.0  # 误差修正量
+
+        while get_time() < deadline and self._running.is_set():
+            # 计算剩余时间（考虑误差修正）
+            remaining = deadline - get_time() - error_correction
+
+            if remaining <= 0.002:  # 2ms时进入最终阶段
+                break
+
+            # 动态睡眠策略
+            if remaining > 0.01:  # 10ms以上使用分级睡眠
+                sleep_time = remaining * 0.75  # 保留25%余量
+                sleep_time = max(sleep_time, 0.005)  # 最小睡眠5ms
+                t1 = get_time()
+                time.sleep(sleep_time)
+                t2 = get_time()
+                error_correction += (t2 - t1) - sleep_time  # 累计误差
+            else:  # 10ms以下使用自适应忙等待
+                while (get_time() + error_correction) < deadline:
+                    if (deadline - get_time()) > 0.002:  # 2ms时切换微睡眠
+                        time.sleep(0.001)
+                    pass
+
+        # 最终修正阶段
+        while (get_time() + error_correction) < deadline:
+            pass
+
+        # 检查暂停状态（优化后的检查频率）
+        check_pause_interval = 0.005  # 5ms检查一次
+        while self._paused.is_set():
+            t1 = get_time()
+            time.sleep(check_pause_interval)
+            deadline += get_time() - t1  # 延长截止时间
+
+    def _cleanup_resources(self):
+        """资源清理"""
+        with self.lock:
+            if self.safe_serial and self.safe_serial.is_open:
+                try:
+                    self.safe_serial.close()
+                except Exception:
+                    pass
+            self.safe_serial = None
+
     def stop(self):
-        self.running = False
-        self.wait(100)
+        """安全停止"""
+        self._running.clear()
+        self._paused.clear()
+        if self.isRunning():
+            self.wait(2500)  # 增加等待时间
 
     def pause(self):
-        self.paused = True
+        self._paused.set()
 
     def resume(self):
-        self.paused = False
+        self._paused.clear()
+
+
 
 
 class MotorControlApp(QMainWindow):
+    log_signal = Signal(str)
     def __init__(self):
         super().__init__()
+        self.resize_timer = QTimer()
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.timeout.connect(self.handle_resize)
         self.serial_port = None
         self.automation_steps = []
         self.current_step = 0
@@ -449,6 +523,7 @@ class MotorControlApp(QMainWindow):
         self.loop_count = 0
         self.presets = PresetManager.load_presets()
         self.automation_thread = None
+        self.log_signal.connect(self._log_impl)
         self.init_ui()
         self.update_preset_combos()
         self.setStyleSheet(MACOS_STYLE)
@@ -579,6 +654,9 @@ class MotorControlApp(QMainWindow):
                 )
 
     def resizeEvent(self, event):
+        self.resize_timer.start(200)
+        super().resizeEvent(event)
+    def handle_resize(self):
         """窗口缩放时自适应字体"""
         base_size = 34
         scale = min(self.width() / 1920, self.height() / 1080)  # 基于基准缩放
@@ -595,7 +673,7 @@ class MotorControlApp(QMainWindow):
         for i in range(column_count):
             self.steps_table.setColumnWidth(i, int(total_width * ratio[i]))
 
-        super().resizeEvent(event)
+
 
     def switch_tab(self, index):
         self.tab_widget.setCurrentIndex(index)
@@ -876,8 +954,8 @@ class MotorControlApp(QMainWindow):
                     f"{motor}"
                     f"{config.get('enable', 'D')}"
                     f"{config.get('direction', 'F')}"
-                    f"V0"
-                    f"G"
+                    f"V{config.get('speed', '0')}"
+                    f"JG"
                 )
             else:
                 cmd = (
@@ -921,18 +999,16 @@ class MotorControlApp(QMainWindow):
         try:
             port = self.port_combo.currentText()
             baudrate = int(self.baud_combo.currentText())
+            # 确保关闭现有连接
+            if self.serial_port and self.serial_port.is_open:
+                self.serial_port.close()
+
             self.serial_port = serial.Serial(
                 port=port,
                 baudrate=baudrate,
-                timeout=2,  # 增加读超时
-                write_timeout=2,  # 增加写超时
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                rtscts=False,  # 禁用硬件流控
-                dsrdtr=False
+                timeout=2,
+                write_timeout=2
             )
-            #self.serial_port.set_buffer_size(rx_size=1024, tx_size=1024)
             self.connect_btn.setText("关闭串口")
             self.log(f"串口已连接 {port}@{baudrate}")
             self.status_bar.showMessage(f"已连接 {port}@{baudrate}")
@@ -940,8 +1016,9 @@ class MotorControlApp(QMainWindow):
             QMessageBox.critical(self, "串口错误", str(e))
 
     def close_serial(self):
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
+        with self.serial_lock:  # 加锁保证原子操作
+            if self.serial_port and self.serial_port.is_open:
+                self.serial_port.close()
         self.connect_btn.setText("打开串口")
         self.log("串口已关闭")
         self.status_bar.showMessage("串口已关闭")
@@ -1003,34 +1080,84 @@ class MotorControlApp(QMainWindow):
                 self.log(f"已删除步骤 {index + 1}")
 
     def start_automation(self):
-        # 串口状态检查
-        if not self.serial_port or not self.serial_port.is_open:
-            QMessageBox.critical(self, "串口错误", "请先打开串口连接！")
-            return
+        # 前置检查
+        if not hasattr(self, '_automation_mutex'):
+            self._automation_mutex = threading.Lock()
 
-        if not self.automation_steps:
-            QMessageBox.warning(self, "警告", "请先添加执行步骤！")
-            return
-        try:
-            self.loop_count = int(self.loop_entry.text())
-            if self.loop_count < 0:
-                raise ValueError
-        except:
-            QMessageBox.critical(self, "输入错误", "请输入有效的循环次数（≥0的整数）")
-            return
+        with self._automation_mutex:
+            if self.automation_thread and self.automation_thread.isRunning():
+                QMessageBox.warning(self, "警告", "已有正在运行的自动化任务")
+                return
 
-        self.running = True
-        self.automation_thread = AutomationThread(
-            self,
-            self.automation_steps,
-            self.loop_count,
-            self.serial_port
-        )
-        self.automation_thread.update_status.connect(self.status_bar.showMessage)
-        self.automation_thread.finished.connect(self.on_automation_finished)
-        self.automation_thread.error_occurred.connect(self.handle_automation_error)  # 连接错误信号
-        self.automation_thread.start()
-        self.log("自动化运行已启动")
+            # 参数验证
+            if not self.serial_port or not self.serial_port.is_open:
+                QMessageBox.critical(self, "错误", "串口未连接")
+                return
+
+            try:
+                self.loop_count = max(0, int(self.loop_entry.text()))
+            except ValueError:
+                QMessageBox.critical(self, "错误", "无效的循环次数")
+                return
+
+
+            # 初始化线程
+            self.automation_thread = AutomationThread(
+                parent=self,
+                steps=self.automation_steps,
+                loop_count=self.loop_count,
+                serial_port=self.serial_port  # 传递参数而非对象
+            )
+
+            # 信号连接
+            self.automation_thread.update_status.connect(self.status_bar.showMessage)
+            self.automation_thread.error_occurred.connect(self.handle_automation_error)
+            self.automation_thread.finished.connect(self._on_automation_finished)
+            self.automation_thread.progress_updated.connect(self._update_progress)
+
+            # 启动前清理
+            self._clear_serial_buffers()
+
+            # 启动线程
+            self.automation_thread.start()
+            self.log("自动化任务安全启动")
+
+    def _on_automation_finished(self):
+        """线程结束后的清理"""
+        if self.automation_thread is not None:
+            # 安全断开信号连接
+            try:
+                self.automation_thread.update_status.disconnect()
+                self.automation_thread.error_occurred.disconnect()
+                self.automation_thread.finished.disconnect()
+                self.automation_thread.progress_updated.disconnect()
+            except (TypeError, RuntimeError):
+                pass  # 如果信号已自动断开则忽略
+
+            # 安全清理线程
+            if self.automation_thread.isRunning():
+                self.automation_thread.quit()
+                self.automation_thread.wait(1000)
+
+            self.automation_thread = None
+
+        self.status_bar.showMessage("自动化运行已完成")
+        self._clear_serial_buffers()
+
+    def _clear_serial_buffers(self):
+        """清理串口缓冲区"""
+        with self.serial_lock:
+            if self.serial_port and self.serial_port.is_open:
+                try:
+                    self.serial_port.reset_input_buffer()
+                    self.serial_port.reset_output_buffer()
+                except Exception as e:
+                    self.log(f"清理缓冲区失败: {str(e)}")
+
+    def _update_progress(self, value):
+        """更新进度显示"""
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setValue(value)
 
     def handle_automation_error(self, message):
         self.stop_automation()
@@ -1038,6 +1165,9 @@ class MotorControlApp(QMainWindow):
         self.log(f"错误: {message}")
 
     def closeEvent(self, event):
+        if platform.system() == 'Windows':
+            from ctypes import windll
+            windll.winmm.timeEndPeriod(1)
         self.stop_automation()  # 确保关闭时停止线程
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
@@ -1051,7 +1181,7 @@ class MotorControlApp(QMainWindow):
             if self.automation_thread.isRunning():
                 self.automation_thread.quit()
                 self.automation_thread.wait(1000)
-            self.automation_thread = None
+            self.automation_thread = None  # 确保在此处置空
         self.running = False
         self.log("自动化运行已停止")
         if self.serial_port and self.serial_port.is_open:
@@ -1068,20 +1198,36 @@ class MotorControlApp(QMainWindow):
         if self.automation_thread is not None:
             self.automation_thread = None
 
-
     def update_steps_table(self):
-        try:
-            # 先清空现有数据
-            self.steps_table.clear()
-            current_steps = [s for s in self.automation_steps if isinstance(s, dict)]  # 有效性过滤
+        current_steps = [s for s in self.automation_steps if isinstance(s, dict)]
 
-            for idx, step in enumerate(current_steps, 1):
+        # 获取当前所有项
+        existing_items = [self.steps_table.topLevelItem(i) for i in range(self.steps_table.topLevelItemCount())]
+
+        # 更新或新增项
+        for idx, step in enumerate(current_steps):
+            if idx < len(existing_items) and existing_items[idx] is not None:
+                self._update_step_item(existing_items[idx], step, idx + 1)
+            else:
                 self._add_step_to_table(step)
 
-            self.log(f"更新步骤列表，成功加载 {len(current_steps)} 项")
+        # 删除多余项
+        for i in range(len(current_steps), len(existing_items)):
+            self.steps_table.takeTopLevelItem(len(current_steps))
 
-        except Exception as e:
-            self.log(f"表格更新失败: {str(e)}")
+    def _update_step_item(self, item, step, idx):
+        params_desc = []
+        for motor in ["X", "Y", "Z", "A"]:
+            cfg = step.get(motor, {})
+            if cfg.get("enable") == "E":
+                desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
+                params_desc.append(desc)
+        params_str = " | ".join(params_desc) if params_desc else "所有电机脱机"
+        item.setText(0, str(idx))
+        item.setText(1, step.get("name", f"步骤 {idx}"))
+        item.setText(2, params_str)
+        item.setText(3, str(step.get("interval", 0)))
+        item.setData(0, Qt.UserRole, step)
 
     def save_manual_preset(self):
         try:
@@ -1226,9 +1372,13 @@ class MotorControlApp(QMainWindow):
             self.log(f"更新预设列表失败: {str(e)}")
 
     def log(self, message):
-        timestamp = time.strftime("%H:%M:%S")
+        self.log_signal.emit(message)  # 通过信号发送日志消息
+
+    def _log_impl(self, message):
+        """实际执行日志记录的槽函数"""
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self.log_text.append(f"[{timestamp}] {message}")
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+        self.log_text.moveCursor(QTextCursor.End)
 
     def clear_log(self):
         self.log_text.clear()
@@ -1239,11 +1389,11 @@ class MotorControlApp(QMainWindow):
 if __name__ == "__main__":
     if os.name == 'nt':
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 设置为系统DPI感知
-
     # 设置高DPI缩放策略
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+       Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
+    #ctypes.windll.ntdll.RtlSetHeapProtection(ctypes.c_void_p(-1), ctypes.c_ulong(0x00000001))
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(':/meow.ico'))
