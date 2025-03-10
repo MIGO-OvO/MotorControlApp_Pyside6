@@ -5,20 +5,18 @@ import os
 import sys
 import threading
 import time
+import traceback
 import weakref
 import resource
 import serial
 import platform
+import math
+from collections import deque
 if platform.system() == 'Windows':
-    # 提高Windows平台的时钟精度到1ms
     from ctypes import windll
     windll.winmm.timeBeginPeriod(1)
-
-
 from datetime import datetime
-
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("motor.control.v1")
-
 from serial.tools import list_ports
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
@@ -26,8 +24,9 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
     QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer
-from PySide6.QtGui import QFont, QTextCursor, QIcon
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer, QPointF, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush
+from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 
 # 样式表
 MACOS_STYLE = """
@@ -103,8 +102,111 @@ QRadioButton::indicator {
 QTabWidget::pane {
     border: 0;
 }
+
+MotorStatusButton {
+    background-color: #007aff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    min-width: 80px;
+}
+MotorStatusButton:checked {
+    background-color: #004999;
+}
+MotorCircle {
+    border: 2px solid #007aff;
+    border-radius: 50%;
+}
+ChartWidget {
+    background-color: white;
+    border-radius: 8px;
+    padding: 15px;
+}
 """
 
+
+class MotorCircle(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._angle = 0
+        self.target_angle = 0
+        self.setFixedSize(150, 150)
+
+        # 先初始化动画相关属性
+        self.animation = QPropertyAnimation(self, b"angle")
+        self.animation.setDuration(1000)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+
+    def set_angle(self, angle):
+        self.target_angle = angle
+        if hasattr(self, 'animation'):
+            self.animation.stop()
+            self.animation.setStartValue(self._angle)
+            self.animation.setEndValue(angle)
+            self.animation.start()
+        self._angle = angle
+        self.update()  # 触发重绘
+
+    def get_angle(self):
+        return self._angle
+
+    angle = property(get_angle, set_angle)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 绘制背景圆
+        painter.setPen(QPen(QColor(200, 200, 200), 3))
+        painter.drawEllipse(10, 10, 130, 130)
+
+        # 绘制转轴
+        painter.setPen(QPen(QColor(0, 122, 255), 5))
+        painter.setBrush(QBrush(QColor(0, 122, 255, 50)))
+        radius = 50
+        center = QPointF(75, 75)
+        end_x = center.x() + radius * math.cos(math.radians(self.angle - 90))
+        end_y = center.y() + radius * math.sin(math.radians(self.angle - 90))
+        painter.drawLine(center, QPointF(end_x, end_y))
+        painter.drawEllipse(center, 15, 15)
+
+    angle = property(get_angle, set_angle)
+
+
+class AnalysisChart(QChart):
+    def __init__(self):
+        super().__init__()
+        self.series = {}
+        self.axisX = QValueAxis()
+        self.axisY = QValueAxis()
+        self.init_chart()
+
+    def init_chart(self):
+        colors = [QColor(255, 0, 0), QColor(0, 255, 0), QColor(0, 0, 255), QColor(255, 165, 0)]
+        for i, motor in enumerate(["X", "Y", "Z", "A"]):
+            series = QLineSeries()
+            series.setName(f"电机{motor}偏差")
+            series.setColor(colors[i])
+            self.addSeries(series)
+            self.series[motor] = series
+        self.addAxis(self.axisX, Qt.AlignBottom)
+        self.addAxis(self.axisY, Qt.AlignLeft)
+        self.axisX.setRange(0, 60)
+        self.axisX.setTitleText("时间 (秒)")
+        self.axisY.setTitleText("角度偏差")
+        self.legend().setVisible(True)
+        for series in self.series.values():
+            series.attachAxis(self.axisX)
+            series.attachAxis(self.axisY)
+        self.data = {motor: deque(maxlen=60) for motor in ["X", "Y", "Z", "A"]}
+        self.time_counter = 0
+
+    def update_data(self, deviations):
+        self.time_counter += 1
+        for motor, dev in deviations.items():
+            self.data[motor].append((self.time_counter, dev))
+            self.series[motor].replace([QPointF(x[0], x[1]) for x in self.data[motor]])
 
 class PresetManager:
     PRESETS_FILE = "presets.json"
@@ -336,11 +438,51 @@ class MotorStepConfig(QDialog):
             QMessageBox.critical(self, "输入错误", str(e))
 
 
+class SerialReader(QThread):
+    data_received = Signal(str)
+    def __init__(self, serial_port):
+        super().__init__()
+        self.serial_port = serial_port
+        self.running = True
+
+    def run(self):
+        while self.running:
+            if self.serial_port and self.serial_port.is_open:
+                try:
+                    # 先检查缓存中是否有数据
+                    if self.serial_port.in_waiting > 0:
+                        # 读取所有可用数据
+                        raw_data = self.serial_port.read(self.serial_port.in_waiting)
+                        print(f"[DEBUG] Raw bytes received: {raw_data}")  # 打印原始字节
+
+                        # 尝试UTF-8解码（兼容ASCII）
+                        try:
+                            data = raw_data.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # 使用替代策略解码
+                            data = raw_data.decode('utf-8', errors='replace')
+                            print(f"[WARN] 解码错误，使用替换字符")
+
+                        # 拆分可能的多条消息
+                        for line in data.split('\n'):
+                            line = line.strip()
+                            if line:
+                                print(f"[DEBUG] Processing line: {line}")
+                                self.data_received.emit(line)
+
+                except Exception as e:
+                    print(f"Serial read error: {str(e)}")
+                    break
+            time.sleep(0.01)  # 防止CPU占用过高
+    def stop(self):
+        self.running = False
+
 class AutomationThread(QThread):
     update_status = Signal(str)
     error_occurred = Signal(str)
     finished = Signal()
-    progress_updated = Signal(int)  # 新增进度信号
+    progress_updated = Signal(int)
+
 
     def __init__(self, parent, steps, loop_count, serial_port):
         super().__init__()
@@ -507,8 +649,11 @@ class AutomationThread(QThread):
 
 class MotorControlApp(QMainWindow):
     log_signal = Signal(str)
+    angle_update = Signal(dict)
     def __init__(self):
         super().__init__()
+        self.angle_update.connect(lambda x: print(f"Signal received: {x}"))
+        self.log_signal.connect(lambda x: print(f"Log: {x}"))
         self.resize_timer = QTimer()
         self.resize_timer.setSingleShot(True)
         self.resize_timer.timeout.connect(self.handle_resize)
@@ -527,6 +672,9 @@ class MotorControlApp(QMainWindow):
         self.setMinimumSize(1080, 800)
         self.resize(1080, 800)
         self.setWindowIcon(QIcon(':/meow.ico'))
+        self.angle_data = {"PRE": {}, "POST": {}}
+        self.angle_update.connect(self.update_angles)
+
 
     def init_ui(self):
         self.setWindowTitle("四轴步进电机控制程序")
@@ -534,19 +682,19 @@ class MotorControlApp(QMainWindow):
         # 主布局
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        self.set_size_policy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout = QHBoxLayout(main_widget)
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(16)
 
         # 左侧导航栏
-        nav_frame = QFrame()
-        nav_frame.setFixedWidth(200)
-        nav_layout = QVBoxLayout(nav_frame)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(8)
+        self.nav_frame = QFrame()
+        self.nav_frame.setFixedWidth(200)
+        self.nav_layout = QVBoxLayout(self.nav_frame)
+        self.nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.nav_layout.setSpacing(8)
 
-        # 控制模式
+        # ================= 控制模式 =================
         control_group = QGroupBox("控制模式")
         control_group.setFont(QFont("Microsoft YaHei", 13))
         control_layout = QVBoxLayout(control_group)
@@ -562,31 +710,48 @@ class MotorControlApp(QMainWindow):
             btn.setFixedHeight(40)
             control_layout.addWidget(btn)
 
-        nav_layout.addWidget(control_group)
+        self.nav_layout.addWidget(control_group)
 
-        # 串口配置
+        # ================= 电机状态 =================
+        self.motor_status_group = QGroupBox("电机状态")
+        self.motor_status_group.setFont(QFont("Microsoft YaHei", 13))
+        motor_status_layout = QVBoxLayout(self.motor_status_group)
+
+        self.position_btn = QPushButton("位置数据")
+        self.position_btn.setCheckable(True)
+        self.analysis_btn = QPushButton("数据分析")
+        self.analysis_btn.setCheckable(True)
+
+        for btn in [self.position_btn, self.analysis_btn]:
+            btn.setFont(QFont("Microsoft YaHei", 13))
+            btn.setFixedHeight(40)
+            motor_status_layout.addWidget(btn)
+
+        self.nav_layout.addWidget(self.motor_status_group)
+
+        # ================= 串口设置 =================
         serial_group = QGroupBox("串口设置")
         serial_group.setFont(QFont("Microsoft YaHei", 13))
         serial_layout = QVBoxLayout(serial_group)
 
+        # 端口选择
         self.port_combo = QComboBox()
-        available_ports = self.get_available_ports()
-        self.port_combo.addItems(available_ports)
-        # 设置默认COM4（如果存在）
-        if "COM4" in available_ports:
-            self.port_combo.setCurrentText("COM4")
-        else:
-            self.port_combo.setCurrentIndex(0)  # 如果COM4不存在则选择第一个可用端口
+        self.port_combo.addItems(self.get_available_ports())
+        if "COM7" in self.get_available_ports():
+            self.port_combo.setCurrentText("COM7")
 
+        # 波特率选择
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(['9600', '19200', '38400', '57600', '115200'])
-        self.baud_combo.setCurrentText("115200")  # 设置默认波特率
+        self.baud_combo.setCurrentText("115200")
 
+        # 统一样式
         for widget in [self.port_combo, self.baud_combo]:
             widget.setFont(QFont("Microsoft YaHei", 16))
             widget.setFixedHeight(40)
             serial_layout.addWidget(widget)
 
+        # 操作按钮
         self.connect_btn = QPushButton("打开串口")
         refresh_btn = QPushButton("刷新端口")
 
@@ -595,15 +760,15 @@ class MotorControlApp(QMainWindow):
             btn.setFixedHeight(40)
             serial_layout.addWidget(btn)
 
-        nav_layout.addWidget(serial_group)
-        nav_layout.addStretch()
+        self.nav_layout.addWidget(serial_group)
+        self.nav_layout.addStretch()
 
         # 主内容区
         content_frame = QFrame()
         content_layout = QVBoxLayout(content_frame)
         content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 标签页
+        # ================= 标签页 =================
         self.tab_widget = QTabWidget()
         self.tab_widget.tabBar().hide()
 
@@ -617,9 +782,18 @@ class MotorControlApp(QMainWindow):
         self.init_auto_tab()
         self.tab_widget.addTab(self.auto_tab, "")
 
+        # 新增的状态页
+        self.position_tab = QWidget()
+        self.init_position_tab()
+        self.tab_widget.addTab(self.position_tab, "")
+
+        self.analysis_tab = QWidget()
+        self.init_analysis_tab()
+        self.tab_widget.addTab(self.analysis_tab, "")
+
         content_layout.addWidget(self.tab_widget)
 
-        # 日志区域
+        # ================= 日志区域 =================
         log_group = QGroupBox("系统日志")
         log_group.setFont(QFont("Microsoft YaHei", 16))
         log_layout = QVBoxLayout(log_group)
@@ -635,12 +809,16 @@ class MotorControlApp(QMainWindow):
 
         content_layout.addWidget(log_group)
 
-        main_layout.addWidget(nav_frame)
+        # 组合布局
+        main_layout.addWidget(self.nav_frame)
         main_layout.addWidget(content_frame)
 
-        # 信号连接
+        # ================= 信号连接 =================
         self.manual_btn.clicked.connect(lambda: self.switch_tab(0))
         self.auto_btn.clicked.connect(lambda: self.switch_tab(1))
+        self.position_btn.clicked.connect(lambda: self.switch_tab(2))
+        self.analysis_btn.clicked.connect(lambda: self.switch_tab(3))
+
         self.connect_btn.clicked.connect(self.toggle_serial)
         refresh_btn.clicked.connect(self.refresh_serial_ports)
 
@@ -648,6 +826,91 @@ class MotorControlApp(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
+
+    def init_position_tab(self):
+        layout = QGridLayout(self.position_tab)
+        self.motors = {}
+        for i, motor in enumerate(["X", "Y", "Z", "A"]):
+            group = QGroupBox(f"电机 {motor}")
+            circle = MotorCircle()
+            self.motors[motor] = circle
+            layout.addWidget(group, i // 2, i % 2)
+            group_layout = QVBoxLayout(group)
+            group_layout.addWidget(circle)
+
+    def init_analysis_tab(self):
+        layout = QVBoxLayout(self.analysis_tab)
+        self.chart_view = QChartView(AnalysisChart())
+        layout.addWidget(self.chart_view)
+
+    def switch_tab(self, index):
+        self.tab_widget.setCurrentIndex(index)
+        self.position_btn.setChecked(index == 2)
+        self.analysis_btn.setChecked(index == 3)
+
+    def update_angles(self, data):
+        # 更新电机位置动画
+        for motor, angle in data.items():
+            if motor in self.motors:
+                widget = self.motors[motor]
+                current = widget.angle
+
+                # 直接使用原始角度值（不进行模运算）
+                diff = angle - current
+
+                # 添加更新阈值（避免频繁微调）
+                if abs(diff) >= 0.01:  # 当角度变化超过0.01度时更新
+                    widget.set_angle(angle)
+
+        # 更新偏差图表
+        deviations = self.calculate_deviations()
+        self.chart_view.chart().update_data(deviations)
+
+    def calculate_deviations(self):
+        # 计算角度偏差
+        deviations = {}
+        for motor in ["X", "Y", "Z", "A"]:
+            pre = self.angle_data["PRE"].get(motor, 0)
+            post = self.angle_data["POST"].get(motor, 0)
+            dev = abs((post - pre + 180) % 360 - 180)
+            deviations[motor] = dev
+        return deviations
+
+    def handle_serial_data(self, data):
+        clean_data = data.strip()
+        if not clean_data:
+            return
+
+        self.log(f"接收: {clean_data}")
+
+        # 新增角度数据解析
+        if data.startswith("ANGLE"):
+            import re
+            # 修改正则表达式以兼容不同小数位数
+            pattern = r"([A-Z])(\d+\.?\d*)"  # 匹配电机代号和数字（允许整数或小数）
+            matches = re.findall(pattern, data)
+            print(f"[DEBUG] Matches: {matches}")  # 调试输出匹配结果
+
+            if matches:
+                angle_dict = {}
+                for motor, value in matches:
+                    try:
+                        angle = float(value)
+                        if motor not in ["X", "Y", "Z", "A"]:
+                            self.log(f"无效电机代号: {motor}")
+                            continue
+                        angle_dict[motor] = angle
+                        print(f"[DEBUG] Parsed: {motor}={angle}")  # 调试输出解析结果
+                    except ValueError:
+                        self.log(f"无效角度值: {motor}{value}")
+                        continue
+
+                if angle_dict:
+                    self.angle_update.emit(angle_dict)
+                    self.angle_data["POST"].update(angle_dict)
+                    print(f"[DEBUG] Emitted angles: {angle_dict}")  # 调试信号发射
+            else:
+                self.log(f"格式错误: {clean_data}")
 
     def set_size_policy(self, h_policy, v_policy):
         """通用尺寸策略设置方法"""
@@ -1006,25 +1269,64 @@ class MotorControlApp(QMainWindow):
         try:
             port = self.port_combo.currentText()
             baudrate = int(self.baud_combo.currentText())
-            # 确保关闭现有连接
-            if self.serial_port and self.serial_port.is_open:
-                self.serial_port.close()
 
+            # 添加详细的连接参数打印
+            print(f"尝试连接串口: {port}@{baudrate}")
+            print(f"当前线程: {threading.current_thread().name}")
+
+            # 创建临时串口对象测试连接
+            test_serial = serial.Serial()
+            test_serial.port = port
+            test_serial.baudrate = baudrate
+            test_serial.timeout = 2
+            test_serial.open()
+            print(f"连接测试成功，当前缓存状态: in_waiting={test_serial.in_waiting}")
+            test_serial.close()
+
+            # 正式连接
             self.serial_port = serial.Serial(
                 port=port,
                 baudrate=baudrate,
+                bytesize=serial.EIGHTBITS,  # 明确设置参数
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
                 timeout=2,
                 write_timeout=2
             )
+
+            # 验证流控制
+            print(f"最终连接参数: {self.serial_port}")
+            print(f"流控制设置: {self.serial_port.rtscts} {self.serial_port.dsrdtr}")
+
+            # 清空缓冲区
+            self.serial_port.reset_input_buffer()
+            self.serial_port.reset_output_buffer()
+
+            # 启动读取线程
+            self.serial_reader = SerialReader(self.serial_port)
+            self.serial_reader.data_received.connect(self.handle_serial_data)
+            self.serial_reader.start()  # 注意这里要调用start()而不是run()
+
             self.connect_btn.setText("关闭串口")
             self.log(f"串口已连接 {port}@{baudrate}")
             self.status_bar.showMessage(f"已连接 {port}@{baudrate}")
+
+        except serial.SerialException as e:
+            error_msg = f"串口连接失败: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            print(f"可用端口列表: {serial.tools.list_ports.comports()}")
+            QMessageBox.critical(self, "串口错误", error_msg)
         except Exception as e:
-            QMessageBox.critical(self, "串口错误", str(e))
+            error_msg = f"未知错误: {str(e)}"
+            print(f"[ERROR] {traceback.format_exc()}")
+            QMessageBox.critical(self, "错误", error_msg)
 
     def close_serial(self):
         with self.serial_lock:  # 加锁保证原子操作
             if self.serial_port and self.serial_port.is_open:
+                if hasattr(self, 'serial_reader'):
+                    self.serial_reader.stop()
+                    self.serial_reader.wait(1000)
                 self.serial_port.close()
         self.connect_btn.setText("打开串口")
         self.log("串口已关闭")
