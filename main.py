@@ -2,11 +2,9 @@
 import ctypes
 import json
 import os
-import queue
 import sys
 import threading
 import time
-import traceback
 import weakref
 import resource
 import serial
@@ -244,7 +242,7 @@ class MotorStepConfig(QDialog):
 
             # 参数输入
             speed_entry = QLineEdit()
-            speed_entry.setPlaceholderText("速度值")
+            speed_entry.setPlaceholderText("速度值 (RPM)")
             speed_entry.setFont(QFont("Microsoft YaHei", 16))
             speed_entry.setFixedHeight(40)
             vbox.addWidget(speed_entry)
@@ -378,7 +376,6 @@ class AutomationThread(QThread):
                     break
         except Exception as e:
             self.error_occurred.emit(f"线程初始化失败: {str(e)}")
-            traceback.print_exc()
         finally:
             self.finished.emit()
 
@@ -573,9 +570,17 @@ class MotorControlApp(QMainWindow):
         serial_layout = QVBoxLayout(serial_group)
 
         self.port_combo = QComboBox()
-        self.port_combo.addItems(self.get_available_ports())
+        available_ports = self.get_available_ports()
+        self.port_combo.addItems(available_ports)
+        # 设置默认COM4（如果存在）
+        if "COM4" in available_ports:
+            self.port_combo.setCurrentText("COM4")
+        else:
+            self.port_combo.setCurrentIndex(0)  # 如果COM4不存在则选择第一个可用端口
+
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(['9600', '19200', '38400', '57600', '115200'])
+        self.baud_combo.setCurrentText("115200")  # 设置默认波特率
 
         for widget in [self.port_combo, self.baud_combo]:
             widget.setFont(QFont("Microsoft YaHei", 16))
@@ -733,7 +738,7 @@ class MotorControlApp(QMainWindow):
 
             # 参数输入
             speed_entry = QLineEdit()
-            speed_entry.setPlaceholderText("速度值")
+            speed_entry.setPlaceholderText("速度值 (RPM)")
             speed_entry.setFont(QFont("Microsoft YaHei", 16))
             speed_entry.setFixedHeight(40)
             vbox.addWidget(speed_entry)
@@ -976,9 +981,11 @@ class MotorControlApp(QMainWindow):
 
     def refresh_serial_ports(self):
         current = self.port_combo.currentText()
+        current_baud = self.baud_combo.currentText()
         self.port_combo.clear()
         available_ports = self.get_available_ports()
         self.port_combo.addItems(available_ports)
+        self.baud_combo.setCurrentText(current_baud)
         # 检查当前端口是否在新的可用端口中
         if current in available_ports:
             self.port_combo.setCurrentText(current)

@@ -913,5 +913,35 @@
       }
     ],
     "loop_count": "0"
+  },
+  "manual_\u521d\u59cb\u5316": {
+    "X": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "30",
+      "angle": "360",
+      "continuous": false
+    },
+    "Y": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "30",
+      "angle": "360",
+      "continuous": false
+    },
+    "Z": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "30",
+      "angle": "360",
+      "continuous": false
+    },
+    "A": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "30",
+      "angle": "360",
+      "continuous": false
+    }
   }
 }

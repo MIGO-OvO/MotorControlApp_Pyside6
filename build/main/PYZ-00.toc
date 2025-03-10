@@ -218,7 +218,6 @@
   ('py_compile',
    'C:\\Program Files\\Python311\\Lib\\py_compile.py',
    'PYMODULE'),
-  ('queue', 'C:\\Program Files\\Python311\\Lib\\queue.py', 'PYMODULE'),
   ('quopri', 'C:\\Program Files\\Python311\\Lib\\quopri.py', 'PYMODULE'),
   ('random', 'C:\\Program Files\\Python311\\Lib\\random.py', 'PYMODULE'),
   ('resource',
