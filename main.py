@@ -2,6 +2,7 @@
 import ctypes
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
     QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout, QTreeWidget,
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
-    QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy
+    QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy, QHeaderView, QTableWidget, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer, QPointF, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush
@@ -178,9 +179,10 @@ class AnalysisChart(QChart):
     def __init__(self):
         super().__init__()
         self.series = {}
-        self.axisX = QValueAxis()
+        self.axisX = QValueAxis()  # 实例化轴对象
         self.axisY = QValueAxis()
         self.init_chart()
+        self.setup_axes()
 
     def init_chart(self):
         colors = [QColor(255, 0, 0), QColor(0, 255, 0), QColor(0, 0, 255), QColor(255, 165, 0)]
@@ -190,23 +192,47 @@ class AnalysisChart(QChart):
             series.setColor(colors[i])
             self.addSeries(series)
             self.series[motor] = series
+
+        # 添加轴到图表
         self.addAxis(self.axisX, Qt.AlignBottom)
         self.addAxis(self.axisY, Qt.AlignLeft)
-        self.axisX.setRange(0, 60)
-        self.axisX.setTitleText("时间 (秒)")
-        self.axisY.setTitleText("角度偏差")
-        self.legend().setVisible(True)
+        self.axisX.setTitleText("运行次数")
+        self.axisY.setTitleText("偏差角度")
+
+        # 将系列附加到轴
         for series in self.series.values():
             series.attachAxis(self.axisX)
             series.attachAxis(self.axisY)
-        self.data = {motor: deque(maxlen=60) for motor in ["X", "Y", "Z", "A"]}
-        self.time_counter = 0
+
+        self.data = {motor: deque(maxlen=100) for motor in ["X", "Y", "Z", "A"]}
+
+    def setup_axes(self):
+        # 初始化轴范围
+        self.axisX.setRange(0, 60)
+        self.axisY.setRange(-5, 5)
+
+        # 设置轴自适应策略
+        self.axisX.setLabelFormat("%.0f")
+        self.axisY.setLabelFormat("%.1f°")
+        self.axisY.applyNiceNumbers()
 
     def update_data(self, deviations):
-        self.time_counter += 1
+        # 更新数据点
         for motor, dev in deviations.items():
-            self.data[motor].append((self.time_counter, dev))
-            self.series[motor].replace([QPointF(x[0], x[1]) for x in self.data[motor]])
+            x = len(self.data[motor]) + 1
+            self.data[motor].append((x, dev))
+            self.series[motor].replace([QPointF(p[0], p[1]) for p in self.data[motor]])
+
+        # 动态调整Y轴范围
+        all_values = [p[1] for motor in self.data.values() for p in motor]
+        min_y = min(all_values) if all_values else -5
+        max_y = max(all_values) if all_values else 5
+        margin = max(0.1 * (max_y - min_y), 0.5)
+        self.axisY.setRange(min_y - margin, max_y + margin)
+
+        # 动态调整X轴范围
+        max_x = max([p[0] for motor in self.data.values() for p in motor]) if any(self.data.values()) else 60
+        self.axisX.setRange(max(0, max_x - 60), max_x)
 
 class PresetManager:
     PRESETS_FILE = "presets.json"
@@ -672,8 +698,12 @@ class MotorControlApp(QMainWindow):
         self.setMinimumSize(1080, 800)
         self.resize(1080, 800)
         self.setWindowIcon(QIcon(':/meow.ico'))
-        self.angle_data = {"PRE": {}, "POST": {}}
         self.angle_update.connect(self.update_angles)
+        self.expected_changes = {}  # 记录每个电机理论转动角度
+        self.last_angles = {}  # 记录上一次接收到的角度
+
+        self.history_data = []  # 修改历史记录数据结构
+        self.current_angles = {"X": 0, "Y": 0, "Z": 0, "A": 0}  # 添加当前角度记录
 
 
     def init_ui(self):
@@ -828,20 +858,75 @@ class MotorControlApp(QMainWindow):
         self.status_bar.showMessage("就绪")
 
     def init_position_tab(self):
-        layout = QGridLayout(self.position_tab)
+        layout = QVBoxLayout(self.position_tab)
+
+        # 电机状态展示区
+        motor_frame = QFrame()
+        motor_layout = QHBoxLayout(motor_frame)
         self.motors = {}
-        for i, motor in enumerate(["X", "Y", "Z", "A"]):
+        self.angle_labels = {}
+
+        for motor in ["X", "Y", "Z", "A"]:
             group = QGroupBox(f"电机 {motor}")
+            vbox = QVBoxLayout(group)
+
+            # 动画组件
             circle = MotorCircle()
             self.motors[motor] = circle
-            layout.addWidget(group, i // 2, i % 2)
-            group_layout = QVBoxLayout(group)
-            group_layout.addWidget(circle)
+
+            # 角度显示
+            label = QLabel("0.00°", alignment=Qt.AlignCenter)
+            label.setStyleSheet("font-size: 16px; color: #007AFF;")
+            self.angle_labels[motor] = label
+
+            vbox.addWidget(circle)
+            vbox.addWidget(label)
+            motor_layout.addWidget(group)
+
+        layout.addWidget(motor_frame)
+
+        # 实时角度表格
+        self.angle_table = QTableWidget()
+        self.angle_table.setColumnCount(4)
+        self.angle_table.setHorizontalHeaderLabels(["电机", "当前角度", "目标角度", "偏差"])
+        self.angle_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        # 添加获取角度按钮
+        self.get_angle_btn = QPushButton("获取当前角度")
+        self.get_angle_btn.clicked.connect(self.request_angles)
+        self.get_angle_btn.setStyleSheet("font-size: 16px; padding: 8px;")
+
+        # 设置布局
+        layout.addWidget(QLabel("实时角度数据:"))
+        layout.addWidget(self.angle_table)
+        layout.addWidget(self.get_angle_btn)
 
     def init_analysis_tab(self):
         layout = QVBoxLayout(self.analysis_tab)
+
+        # 偏差折线图
         self.chart_view = QChartView(AnalysisChart())
-        layout.addWidget(self.chart_view)
+        layout.addWidget(self.chart_view, stretch=3)
+
+        # 历史数据表格（调整后的）
+        self.history_table = QTableWidget()
+        self.history_table.setColumnCount(5)
+        self.history_table.setHorizontalHeaderLabels(["时间", "X角度", "Y角度", "Z角度", "A角度"])
+        self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        layout.addWidget(QLabel("历史角度记录:"))
+        layout.addWidget(self.history_table, stretch=2)
+
+    def request_angles(self):
+        """发送获取角度指令"""
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                self.serial_port.write("GETANGLE\n".encode())
+                self.log("已发送角度查询指令: GETANGLE")
+            except Exception as e:
+                self.log(f"指令发送失败: {str(e)}")
+        else:
+            QMessageBox.warning(self, "警告", "请先连接串口")
 
     def switch_tab(self, index):
         self.tab_widget.setCurrentIndex(index)
@@ -849,68 +934,104 @@ class MotorControlApp(QMainWindow):
         self.analysis_btn.setChecked(index == 3)
 
     def update_angles(self, data):
-        # 更新电机位置动画
-        for motor, angle in data.items():
+        timestamp = datetime.now()
+
+        # 更新电机动画和文本
+        for motor, current_angle in data.items():
+            # 计算目标角度和偏差
+            last_angle = self.last_angles.get(motor, 0)
+            expected = self.expected_changes.get(motor, 0) or 0
+            target_angle = last_angle + expected
+            deviation = (current_angle - last_angle) - expected
+
+            # 更新显示组件
             if motor in self.motors:
-                widget = self.motors[motor]
-                current = widget.angle
+                self.motors[motor].set_angle(current_angle)
+                self.angle_labels[motor].setText(f"{current_angle:.1f}°")
 
-                # 直接使用原始角度值（不进行模运算）
-                diff = angle - current
+            # 保存历史记录
+            self.history_records.append({
+                "time": timestamp,
+                "motor": motor,
+                "current": current_angle,
+                "target": target_angle,
+                "deviation": deviation
+            })
 
-                # 添加更新阈值（避免频繁微调）
-                if abs(diff) >= 0.01:  # 当角度变化超过0.01度时更新
-                    widget.set_angle(angle)
+            # 更新最后角度
+            self.last_angles[motor] = current_angle
 
-        # 更新偏差图表
-        deviations = self.calculate_deviations()
-        self.chart_view.chart().update_data(deviations)
+        # 更新表格数据
+        self.update_angle_table(data)
+        self.update_history_table()
 
-    def calculate_deviations(self):
-        # 计算角度偏差
-        deviations = {}
-        for motor in ["X", "Y", "Z", "A"]:
-            pre = self.angle_data["PRE"].get(motor, 0)
-            post = self.angle_data["POST"].get(motor, 0)
-            dev = abs((post - pre + 180) % 360 - 180)
-            deviations[motor] = dev
-        return deviations
+    def update_angle_table(self, data):
+        self.angle_table.setRowCount(4)
+        for row, motor in enumerate(["X", "Y", "Z", "A"]):
+            current = data.get(motor, 0)
+            target = self.last_angles.get(motor, 0) + self.expected_changes.get(motor, 0)
+            deviation = (current - self.last_angles.get(motor, 0)) - self.expected_changes.get(motor, 0)
+
+            items = [
+                QTableWidgetItem(motor),
+                QTableWidgetItem(f"{current:.2f}°"),
+                QTableWidgetItem(f"{target:.2f}°"),
+                QTableWidgetItem(f"{deviation:.2f}°")
+            ]
+            for col, item in enumerate(items):
+                item.setTextAlignment(Qt.AlignCenter)
+                self.angle_table.setItem(row, col, item)
 
     def handle_serial_data(self, data):
-        clean_data = data.strip()
-        if not clean_data:
-            return
-
-        self.log(f"接收: {clean_data}")
-
-        # 新增角度数据解析
         if data.startswith("ANGLE"):
-            import re
-            # 修改正则表达式以兼容不同小数位数
-            pattern = r"([A-Z])(\d+\.?\d*)"  # 匹配电机代号和数字（允许整数或小数）
+            # 解析角度数据
+            pattern = r"([A-Z])(-?\d+\.?\d*)"
             matches = re.findall(pattern, data)
-            print(f"[DEBUG] Matches: {matches}")  # 调试输出匹配结果
-
             if matches:
-                angle_dict = {}
+                # 更新当前角度
+                current_angles = {}
                 for motor, value in matches:
                     try:
-                        angle = float(value)
-                        if motor not in ["X", "Y", "Z", "A"]:
-                            self.log(f"无效电机代号: {motor}")
-                            continue
-                        angle_dict[motor] = angle
-                        print(f"[DEBUG] Parsed: {motor}={angle}")  # 调试输出解析结果
+                        current_angles[motor] = float(value)
                     except ValueError:
-                        self.log(f"无效角度值: {motor}{value}")
-                        continue
+                        pass
 
-                if angle_dict:
-                    self.angle_update.emit(angle_dict)
-                    self.angle_data["POST"].update(angle_dict)
-                    print(f"[DEBUG] Emitted angles: {angle_dict}")  # 调试信号发射
-            else:
-                self.log(f"格式错误: {clean_data}")
+                # 填充所有电机角度（缺失的保持上次值）
+                full_data = {
+                    "time": datetime.now(),
+                    "X": current_angles.get("X", self.current_angles["X"]),
+                    "Y": current_angles.get("Y", self.current_angles["Y"]),
+                    "Z": current_angles.get("Z", self.current_angles["Z"]),
+                    "A": current_angles.get("A", self.current_angles["A"])
+                }
+
+                # 更新界面显示
+                self.update_angle_table(full_data)
+                self.update_history_display(full_data)
+
+                # 更新当前角度记录
+                self.current_angles.update(full_data)
+
+    def update_history_display(self, data):
+        """更新分析页历史数据表格"""
+        row = self.history_table.rowCount()
+        self.history_table.insertRow(row)
+
+        items = [
+            QTableWidgetItem(data["time"].strftime("%H:%M:%S.%f")[:-3]),
+            QTableWidgetItem(f"{data['X']:.2f}°"),
+            QTableWidgetItem(f"{data['Y']:.2f}°"),
+            QTableWidgetItem(f"{data['Z']:.2f}°"),
+            QTableWidgetItem(f"{data['A']:.2f}°")
+        ]
+
+        for col, item in enumerate(items):
+            item.setTextAlignment(Qt.AlignCenter)
+            self.history_table.setItem(row, col, item)
+
+        # 保持显示最新50条记录
+        if self.history_table.rowCount() > 50:
+            self.history_table.removeRow(0)
 
     def set_size_policy(self, h_policy, v_policy):
         """通用尺寸策略设置方法"""
@@ -1210,30 +1331,47 @@ class MotorControlApp(QMainWindow):
                 self.update_steps_table()
                 self.log(f"步骤 {step_index + 1} 已编辑")
 
-    def generate_command(self, step):
+    def generate_command(self, step_params):
+        """生成控制指令并计算理论转动角度"""
         command = ""
+        self.expected_changes = {}  # 重置理论角度变化
+
         for motor in ["X", "Y", "Z", "A"]:
-            config = step.get(motor, {})
-            angle = config.get("angle", "0")
+            config = step_params.get(motor, {})
+            enable = config.get("enable", "D")
+            direction = config.get("direction", "F")
+            speed = config.get("speed", "0")
+            angle = config.get("angle", "0").upper()
             is_continuous = config.get("continuous", False)
 
-            if is_continuous and angle.isdigit() and int(angle) >= 0:
-                cmd = (
-                    f"{motor}"
-                    f"{config.get('enable', 'D')}"
-                    f"{config.get('direction', 'F')}"
-                    f"V{config.get('speed', '0')}"
-                    f"JG"
-                )
+            # 生成命令部分
+            cmd = f"{motor}{enable}{direction}V{speed}"
+            if is_continuous:
+                cmd += "JG"  # 持续转动命令
             else:
-                cmd = (
-                    f"{motor}"
-                    f"{config.get('enable', 'D')}"
-                    f"{config.get('direction', 'F')}"
-                    f"V{config.get('speed', '0')}"
-                    f"J{config.get('angle', '0')}"
-                )
+                cmd += f"J{angle}"  # 定点转动命令
             command += cmd
+
+            # 计算理论转动角度（仅当启用且非持续转动时）
+            if enable == "E" and not is_continuous:
+                try:
+                    # 计算方向系数：正转=+1，反转=-1
+                    dir_coeff = 1 if direction == "F" else -1
+
+                    # 理论角度变化 = 指令角度 × 方向
+                    if angle == "G":
+                        # 持续转动模式无理论角度变化
+                        expected = None
+                    else:
+                        expected = float(angle) * dir_coeff
+                except ValueError:
+                    expected = 0
+                    self.log(f"电机{motor}角度值错误: {angle}")
+            else:
+                expected = 0
+
+            self.expected_changes[motor] = expected
+
         return command + "\r\n"
 
     def get_available_ports(self):

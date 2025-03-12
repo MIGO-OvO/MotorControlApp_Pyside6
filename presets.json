@@ -1188,13 +1188,13 @@
           "enable": "E",
           "direction": "F",
           "speed": "10",
-          "angle": "60"
+          "angle": "30"
         },
         "Y": {
-          "enable": "D",
+          "enable": "E",
           "direction": "F",
           "speed": "20",
-          "angle": "120"
+          "angle": "60"
         },
         "Z": {
           "enable": "D",
@@ -1208,9 +1208,39 @@
           "speed": "0",
           "angle": "0"
         },
-        "interval": 3000
+        "interval": 6000
       }
     ],
     "loop_count": "0"
+  },
+  "manual_\u901a\u4fe1\u6d4b\u8bd5": {
+    "X": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "20",
+      "angle": "60",
+      "continuous": false
+    },
+    "Y": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "20",
+      "angle": "60",
+      "continuous": false
+    },
+    "Z": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "20",
+      "angle": "360",
+      "continuous": false
+    },
+    "A": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "20",
+      "angle": "360",
+      "continuous": false
+    }
   }
 }
