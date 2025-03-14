@@ -1188,7 +1188,7 @@
           "enable": "E",
           "direction": "F",
           "speed": "10",
-          "angle": "30"
+          "angle": "120"
         },
         "Y": {
           "enable": "E",
@@ -1242,5 +1242,155 @@
       "angle": "360",
       "continuous": false
     }
+  },
+  "auto_\u89d2\u5ea6\u6d4b\u8bd52": {
+    "steps": [
+      {
+        "name": "",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      }
+    ],
+    "loop_count": "10"
+  },
+  "auto_\u57fa\u51c6\u6d4b\u8bd5": {
+    "steps": [
+      {
+        "name": "\u6b63\u8f6c1",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "interval": 4000
+      },
+      {
+        "name": "\u53cd\u8f6c",
+        "X": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "interval": 4000
+      },
+      {
+        "name": "\u6b63\u53cd\u8f6c",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "interval": 4000
+      },
+      {
+        "name": "\u53cd\u6b63\u8f6c",
+        "X": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "20",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "20",
+          "angle": "60"
+        },
+        "interval": 4000
+      }
+    ],
+    "loop_count": "3"
   }
 }
