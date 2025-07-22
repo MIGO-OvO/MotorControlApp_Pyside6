@@ -24,18 +24,18 @@ from PySide6.QtWidgets import (
     QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout, QTreeWidget,
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
     QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy, QHeaderView, QTableWidget, QTableWidgetItem,
-    QFormLayout, QGraphicsDropShadowEffect, QGraphicsView
+    QFormLayout, QGraphicsDropShadowEffect, QGraphicsView, QFileDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer, QPointF, QPropertyAnimation, QEasingCurve, \
     QMargins
 from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush, QLinearGradient, QGradient, \
-    QPainterPath
+    QPainterPath, QDoubleValidator
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QLegend, QScatterSeries
 
 # 样式表
 MACOS_STYLE = """
 QWidget {
-    font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
+    font-family: 'Times New Roman', 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
     font-size: 18px;
     color: #000000;
     background-color: #FFFFFF;
@@ -44,8 +44,8 @@ QWidget {
 QGroupBox {
     border: 1px solid #D3D3D3;
     border-radius: 10px;
-    margin-top: 10px;
-    padding-top: 15px;
+    margin-top: 8px;
+    padding-top: 12px;
 }
 
 QGroupBox::title {
@@ -207,10 +207,10 @@ class AnalysisChart(QChart):
         self.series = {}
         self.markers = {}
         self.data = {
-            "X": deque(maxlen=200),
-            "Y": deque(maxlen=200),
-            "Z": deque(maxlen=200),
-            "A": deque(maxlen=200)
+            "X": deque(maxlen=10000),
+            "Y": deque(maxlen=10000),
+            "Z": deque(maxlen=10000),
+            "A": deque(maxlen=10000)
         }
         self.init_chart()
         self.setup_axes()
@@ -257,7 +257,7 @@ class AnalysisChart(QChart):
         self.axisX.setLinePen(QPen(Qt.black, 1.5))
         self.axisX.setLabelFormat("%d")
         # Y轴样式
-        self.axisY.setTitleText("Deviation (°)")
+        self.axisY.setTitleText("Deviation（°）")
         self.axisY.setTitleFont(QFont("Times New Roman", 18))
         self.axisY.setLabelsFont(QFont("Times New Roman", 12))
         self.axisY.setGridLineColor(QColor(220, 220, 220))
@@ -297,15 +297,20 @@ class AnalysisChart(QChart):
 
         # 设置轴自适应策略
         self.axisX.setLabelFormat("%.0f")
-        self.axisY.setLabelFormat("%.0f°")
+        self.axisY.setLabelFormat("%.2f")
         self.axisY.applyNiceNumbers()
 
     def update_data(self, deviations):
-        """修正后的数据更新方法"""
+        """只更新启用电机的数据"""
+        # 获取当前活动电机（从父窗口）
+        parent = self.parent()
+        active_motors = parent.active_motors if hasattr(parent, 'active_motors') else ["X", "Y", "Z", "A"]
+
+        # 过滤数据，只处理活动电机
         valid_data = {
             k: round(v, 3)
-            for k, v in deviations.items()
-            if v is not None and isinstance(v, (int, float))
+            for k, v in deviations.get("theoretical", {}).items()
+            if v is not None and k in self.data and k in active_motors
         }
 
         # 更新数据存储
@@ -313,6 +318,12 @@ class AnalysisChart(QChart):
             self.data[motor].append(dev)
             points = [QPointF(x, y) for x, y in enumerate(self.data[motor])]
             self.series[motor].replace(points[-100:])  # 只显示最近100个点
+
+            # 更新标记点（只显示最新点）
+            if points:
+                marker_point = [points[-1]]
+                self.markers[motor].replace(marker_point)
+
         # 智能坐标轴调整
         self.auto_scale_axes()
 
@@ -338,6 +349,34 @@ class AnalysisChart(QChart):
             self.axisX.setRange(start, max_length)
         else:
             self.axisX.setRange(0, 100)
+
+    def clear(self):
+        """清空所有数据"""
+        for motor in ["X", "Y", "Z", "A"]:
+            self.data[motor].clear()
+            self.series[motor].replace([])
+            self.markers[motor].replace([])
+        self.setup_axes()
+        self.update()
+
+    def get_chart_data(self):
+        """获取当前图表数据"""
+        return {
+            motor: list(self.data[motor])
+            for motor in ["X", "Y", "Z", "A"]
+        }
+
+    def get_motor_data(self, motor):
+        """获取指定电机的完整数据"""
+        return list(self.data.get(motor, []))
+
+    def replace_data(self, motor, data_points):
+        """替换指定电机的数据序列"""
+        if motor in self.series:
+            points = [QPointF(x, y) for x, y in enumerate(data_points)]
+            self.series[motor].replace(points)
+            self.data[motor] = deque(data_points, maxlen=200)
+            self.auto_scale_axes()
 
 class PresetManager:
     PRESETS_FILE = "presets.json"
@@ -538,19 +577,39 @@ class MotorStepConfig(QDialog):
     def save_params(self):
         try:
             params = {}
-            params["name"] = self.name_entry.text()  # 保存步骤名称
+            params["name"] = self.name_entry.text()
             for motor in self.motors:
                 widgets = self.widgets[motor]
                 enable = "E" if widgets["enable"].isChecked() else "D"
                 direction = "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
-                speed = widgets["speed"].text()
-                angle = widgets["angle"].text().upper()
 
-                if not speed.isdigit() or not (0 <= float(speed)):
-                    raise ValueError(f"电机{motor}速度值无效")
+                # 处理速度值（空值默认为0）
+                speed_text = widgets["speed"].text().strip()
+                if not speed_text:
+                    speed = "0"
+                else:
+                    try:
+                        speed_val = float(speed_text)
+                        if speed_val < 0:
+                            raise ValueError
+                        speed = f"{speed_val:.1f}".rstrip('0').rstrip('.')  # 保留1位小数并优化格式
+                    except ValueError:
+                        raise ValueError(f"电机{motor}速度值无效")
 
-                if not (angle.isdigit() and 0 <= float(angle)) and angle.upper() != "G":
-                    raise ValueError(f"电机{motor}角度值无效")
+                # 处理角度值（空值默认为0，支持G指令）
+                angle_text = widgets["angle"].text().strip().upper()
+                if not angle_text:
+                    angle = "0"
+                elif angle_text == "G":
+                    angle = "G"
+                else:
+                    try:
+                        angle_val = float(angle_text)
+                        if angle_val < 0:
+                            raise ValueError
+                        angle = f"{angle_val:.3f}".rstrip('0').rstrip('.')  # 保留3位小数并优化格式
+                    except ValueError:
+                        raise ValueError(f"电机{motor}角度值无效")
 
                 params[motor] = {
                     "enable": enable,
@@ -559,10 +618,19 @@ class MotorStepConfig(QDialog):
                     "angle": angle
                 }
 
-            interval = self.interval_entry.text()
-            if not interval.isdigit() or int(interval) < 0:
-                raise ValueError("间隔时间必须为0或正整数")
-            params["interval"] = int(interval)
+            # 处理间隔时间（空值默认为5000ms）
+            interval_text = self.interval_entry.text().strip()
+            if not interval_text:
+                interval = 5000
+            else:
+                try:
+                    interval = int(interval_text)
+                    if interval < 0:
+                        raise ValueError("间隔时间不能为负数")
+                except ValueError:
+                    raise ValueError("间隔时间必须为0或正整数")
+            params["interval"] = interval
+
             self.step_params = params
             self.accept()
         except Exception as e:
@@ -621,8 +689,33 @@ class AutomationThread(QThread):
         self._current_loop = 1
         self.lock = parent.serial_lock
 
+    def safe_stop(self):
+        """停止"""
+        self._running.clear()
+        self._paused.clear()
+
+        # 尝试中断任何可能的阻塞操作
+        with self.lock:
+            if self.serial_port and self.serial_port.is_open:
+                try:
+                    # 发送紧急停止指令
+                    self.serial_port.write(b"XDFV0J0 YDFV0J0 ZDFV0J0 ADFV0J0\r\n")
+                    self.serial_port.flush()
+                except Exception:
+                    pass
+
+                # 关闭串口（仅关闭自动化线程的副本）
+                try:
+                    self.serial_port.close()
+                except Exception:
+                    pass
+
+        # 等待线程安全退出
+        if self.isRunning():
+            self.wait(1000)  # 最多等待1秒
+
     def _deep_copy_steps(self, steps):
-        """安全的深拷贝方法"""
+        """拷贝方法"""
         try:
             return json.loads(json.dumps(steps))
         except Exception as e:
@@ -633,6 +726,10 @@ class AutomationThread(QThread):
         try:
             while self._running.is_set() and self._should_continue():
                 try:
+                    # 在关键操作前增加停止检查
+                    if not self._running.is_set():
+                        break
+
                     self._execute_loop()
                 except serial.SerialException as e:
                     self.error_occurred.emit(f"串口通信失败: {str(e)}")
@@ -643,6 +740,14 @@ class AutomationThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"线程初始化失败: {str(e)}")
         finally:
+            # 确保最终清理
+            try:
+                with self.lock:
+                    if self.serial_port and self.serial_port.is_open:
+                        self.serial_port.close()
+            except Exception:
+                pass
+
             self.finished.emit()
 
 
@@ -678,13 +783,26 @@ class AutomationThread(QThread):
 
     def _send_step_command(self, step):
         """发送步骤命令"""
+        # 首先检查是否已停止
+        if not self._running.is_set():
+            return False
+
         try:
             parent = self.parent_ref()
             if not parent or not self.serial_port:
                 return False
 
             command = parent.generate_command(step)
+
+            # 再次检查是否已停止
+            if not self._running.is_set():
+                return False
+
             with self.lock:  # 使用主线程的串口锁
+                # 发送前再次检查
+                if not self._running.is_set():
+                    return False
+
                 if not self.serial_port.is_open:
                     self.error_occurred.emit("串口连接已断开")
                     return False
@@ -793,28 +911,32 @@ class MotorControlApp(QMainWindow):
         self.init_ui()
         self.update_preset_combos()
         self.setStyleSheet(MACOS_STYLE)
-        self.setMinimumSize(1080, 800)
-        self.resize(1080, 800)
+        self.setMinimumSize(1080, 820)
+        self.resize(1080, 820)
         self.setWindowIcon(QIcon(':/meow.ico'))
         self.angle_update.connect(self.update_angles)
         self.expected_changes = {}  # 记录每个电机理论转动角度
         self.last_angles = {}  # 记录上一次接收到的角度
         self.current_angles = {"X": 0, "Y": 0, "Z": 0, "A": 0}  # 添加当前角度记录
         self.pending_targets = {}
-        self.target_angles = {"X": None, "Y": None, "Z": None, "A": None}  # 新增目标角度存储
         self.expected_changes = {}  # 保持理论变化量
-        self.deviation_data = {
-            "X": deque(maxlen=100),  # 保存最近100个偏差值
-            "Y": deque(maxlen=100),
-            "Z": deque(maxlen=100),
-            "A": deque(maxlen=100)
-        }
+        self.realtime_deviation_history = {m: deque(maxlen=1000) for m in ["X", "Y", "Z", "A"]}
         self.expected_rotation = {"X": 0, "Y": 0, "Z": 0, "A": 0}  # 预计转动量
-        self.cumulative_deviations = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}
-
+        self.theoretical_deviations = {m: None for m in ["X", "Y", "Z", "A"]}  # 理论偏差存储
+        self.auto_calibration_enabled = False
+        self.copied_step = None
+        self.expected_angles = {m: 0.0 for m in ["X", "Y", "Z", "A"]}
+        self.is_initializing = False
+        self.active_motors = set(["X", "Y", "Z", "A"])
+        self.initial_angle_base = {m: None for m in ["X", "Y", "Z", "A"]}  # 初始基准角度
+        self.accumulated_rotation = {m: 0.0 for m in ["X", "Y", "Z", "A"]}  # 累积原始转动量
+        self.theoretical_target = {m: None for m in ["X", "Y", "Z", "A"]}  # 理论目标角度
+        self.is_first_command = True  # 是否是第一条指令
+        self.running_mode = "manual"
+        self.calibration_amplitude = 1.0
 
     def init_ui(self):
-        self.setWindowTitle("四轴步进电机控制程序")
+        self.setWindowTitle("环境现场监测系统控制程序")
 
         # 主布局
         main_widget = QWidget()
@@ -874,8 +996,8 @@ class MotorControlApp(QMainWindow):
         # 端口选择
         self.port_combo = QComboBox()
         self.port_combo.addItems(self.get_available_ports())
-        if "COM7" in self.get_available_ports():
-            self.port_combo.setCurrentText("COM7")
+        if "COM4" in self.get_available_ports():
+            self.port_combo.setCurrentText("COM4")
 
         # 波特率选择
         self.baud_combo = QComboBox()
@@ -904,6 +1026,9 @@ class MotorControlApp(QMainWindow):
         content_frame = QFrame()
         content_layout = QVBoxLayout(content_frame)
         content_layout.setContentsMargins(0, 0, 0, 0)
+
+        # ================= 自动校准开关 =================
+        self.add_auto_calibration_switch()
 
         # ================= 标签页 =================
         self.tab_widget = QTabWidget()
@@ -964,6 +1089,52 @@ class MotorControlApp(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
 
+    def add_auto_calibration_switch(self):
+        """在左侧导航栏添加自动校准开关和幅值输入"""
+        auto_cal_group = QGroupBox("自动校准")
+        auto_cal_group.setFont(QFont("Microsoft YaHei", 13))
+        auto_cal_layout = QVBoxLayout(auto_cal_group)
+        # 开关布局
+        switch_frame = QFrame()
+        hbox = QHBoxLayout(switch_frame)
+        auto_cal_label = QLabel("校准开关:")
+        self.auto_cal_switch = IOSSwitch()
+        hbox.addWidget(auto_cal_label)
+        hbox.addWidget(self.auto_cal_switch)
+        auto_cal_layout.addWidget(switch_frame)
+        # 校准幅值输入框
+        amplitude_frame = QFrame()
+        hbox_amp = QHBoxLayout(amplitude_frame)
+        amp_label = QLabel("校准幅值：")
+        self.calibration_amp_input = QLineEdit()
+        self.calibration_amp_input.setFixedWidth(80)
+        self.calibration_amp_input.setText("1.0")
+        self.calibration_amp_input.setValidator(QDoubleValidator(0.0, 2.0, 2))  # 限制输入范围0-2，两位小数
+        hbox_amp.addWidget(amp_label)
+        hbox_amp.addWidget(self.calibration_amp_input)
+        auto_cal_layout.addWidget(amplitude_frame)
+        # 初始状态设置
+        self.calibration_amp_input.setEnabled(False)  # 默认禁用
+        # 信号连接
+        self.auto_cal_switch.stateChanged.connect(self.toggle_auto_calibration)
+        self.calibration_amp_input.textChanged.connect(self.update_calibration_amplitude)
+        self.nav_layout.insertWidget(3, auto_cal_group)
+
+    def update_calibration_amplitude(self):
+        """更新校准幅值"""
+        try:
+            self.calibration_amplitude = float(self.calibration_amp_input.text())
+        except ValueError:
+            self.log("校准幅值无效，已重置为1.0")
+            self.calibration_amp_input.setText("1.0")
+            self.calibration_amplitude = 1.0
+
+    def toggle_auto_calibration(self, state):
+        self.auto_calibration_enabled = state
+        self.calibration_amp_input.setEnabled(state)
+        status = "启用" if state else "停用"
+        self.log(f"自动校准已{status}")
+
     def init_position_tab(self):
         layout = QVBoxLayout(self.position_tab)
 
@@ -984,7 +1155,7 @@ class MotorControlApp(QMainWindow):
             self.motors[motor] = circle
 
             # 角度显示
-            label = QLabel("0.00°", alignment=Qt.AlignCenter)
+            label = QLabel("0.000°", alignment=Qt.AlignCenter)
             label.setStyleSheet("font-size: 24px; color: #007AFF;")
             self.angle_labels[motor] = label
 
@@ -1008,9 +1179,41 @@ class MotorControlApp(QMainWindow):
         # 实时角度表格
         self.angle_table = QTableWidget()
         self.angle_table.setRowCount(4)
-        self.angle_table.setColumnCount(4)
-        self.angle_table.setHorizontalHeaderLabels(["电机", "当前角度", "目标角度", "偏差"])
-        self.angle_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.angle_table.setColumnCount(5)
+        self.angle_table.setHorizontalHeaderLabels([
+            "电机",
+            "当前角度",
+            "目标角度",
+            "理论偏差",
+            "实时偏差"
+        ])
+        # 设置表格样式
+        self.angle_table.verticalHeader().setVisible(False)  # 隐藏垂直表头
+        self.angle_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # 自动拉伸列宽
+        self.angle_table.setAlternatingRowColors(True)  # 交替行颜色
+        # 设置表头居中
+        header = self.angle_table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignCenter)
+        header.setStyleSheet("""
+                QHeaderView::section {
+                    font-size: 18px;
+                    padding: 5px;
+                    background-color: #f0f0f0;
+                }
+            """)
+
+        # 设置表格内容全局居中
+        self.angle_table.setStyleSheet("""
+                QTableWidget {
+                    font-size: 18px;
+                }
+                QTableWidget QTableCornerButton::section {
+                    background-color: #f0f0f0;
+                }
+                QTableWidget::item {
+                    text-align: center;
+                }
+            """)
 
         # 新增初始化按钮
         btn_frame = QFrame()
@@ -1029,9 +1232,11 @@ class MotorControlApp(QMainWindow):
         layout.addWidget(btn_frame)
 
     def start_calibration(self):
+        """开始初始化流程"""
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.warning(self, "警告", "请先连接串口")
             return
+
         self.calibration_attempts = 0
         self.last_calibration_angles = {m: [] for m in ["X", "Y", "Z", "A"]}
         self.send_calibration_command()
@@ -1040,7 +1245,7 @@ class MotorControlApp(QMainWindow):
         motor_commands = {}
         for motor in ["X", "Y", "Z", "A"]:
             if self.calibration_switches[motor].isChecked():
-                current_angle = self.current_angles.get(motor, 0) % 360
+                current_angle = (self.current_angles.get(motor, 0.0) or 0.0) % 360
 
                 # 计算最短路径
                 if current_angle > 180:
@@ -1050,8 +1255,8 @@ class MotorControlApp(QMainWindow):
                     target_angle = current_angle
                     direction = "EB"  # 反向转动
 
-                # 生成校准指令（固定速度20RPM，三位小数精度）
-                motor_commands[motor] = f"{motor}{direction}V20J{target_angle:.3f}"
+                # 生成校准指令（固定速度5RPM，三位小数精度）
+                motor_commands[motor] = f"{motor}{direction}V5J{target_angle:.3f}"
             else:
                 # 未选择的电机发送停转指令
                 motor_commands[motor] = f"{motor}DFV0J0"
@@ -1060,8 +1265,13 @@ class MotorControlApp(QMainWindow):
         full_command = "".join([motor_commands[m] for m in ["X", "Y", "Z", "A"]]) + "\r\n"
 
         if self.send_command(full_command):
-            # 发送校准命令后等待8秒再读取角度
-            QTimer.singleShot(5000, self.send_angle_request)
+            # 发送校准命令后等待10秒再读取角度
+            QTimer.singleShot(10000, self.send_angle_request)
+
+    def format_number(self, value):
+        """格式化数值，去除末尾多余的零和小数点"""
+        s = "{:.3f}".format(value).rstrip('0').rstrip('.')
+        return s
 
     def send_angle_request(self):
         self.request_angles()  # 发送获取角度指令
@@ -1076,13 +1286,14 @@ class MotorControlApp(QMainWindow):
                 current_angle = self.current_angles.get(motor, 0) % 360
 
                 # 验证校准精度（±1°范围内视为成功）
-                if min(current_angle, 360 - current_angle) > 1.0:
+                if min(current_angle, 360 - current_angle) > 1.5:
                     validation_passed = False
                     self.log(f"电机{motor}校准偏差过大：{current_angle:.2f}°")
 
         if validation_passed or self.calibration_attempts >= 3:
             if validation_passed:
                 self.log("校准成功完成")
+                self.clear_chart()
                 QMessageBox.information(self, "完成", "电机校准完成")
             else:
                 self.log("校准失败，请检查机械结构")
@@ -1144,30 +1355,82 @@ class MotorControlApp(QMainWindow):
             self.run_calibration_cycle()
 
     def init_analysis_tab(self):
-        """修改分析页布局"""
+        """初始化分析标签页布局"""
         layout = QVBoxLayout(self.analysis_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
 
-        # 偏差折线图
+        # ================= 图表展示区域 =================
         self.chart_view = QChartView(AnalysisChart())
         self.chart_view.setRenderHint(QPainter.Antialiasing, True)
-        self.chart_view.setRenderHint(QPainter.TextAntialiasing, True)
+        self.chart_view.setMinimumHeight(350)
         layout.addWidget(self.chart_view, stretch=3)
 
-        # 统计面板
-        stats_group = QGroupBox("电机偏差统计")
+        # ================= 控制按钮区域 =================
+        control_frame = QFrame()
+        control_layout = QHBoxLayout(control_frame)
+        control_layout.setContentsMargins(5, 5, 5, 5)
+        control_layout.setSpacing(10)
+
+        # 电机选择组件
+        motor_selector = QFrame()
+        hbox_motor = QHBoxLayout(motor_selector)
+        hbox_motor.setContentsMargins(0, 0, 0, 0)
+        hbox_motor.addWidget(QLabel("保存电机数据:"))
+
+        self.export_motor_combo = QComboBox()
+        self.export_motor_combo.addItems(["全部", "X轴", "Y轴", "Z轴", "A轴"])
+        self.export_motor_combo.setFixedWidth(120)
+        self.export_motor_combo.setFont(QFont("Microsoft YaHei", 10))
+        hbox_motor.addWidget(self.export_motor_combo)
+
+        control_layout.addWidget(motor_selector)
+
+        # 操作按钮组
+        button_style = """
+        QPushButton {
+            font-size: 12px;
+            padding: 5px 8px;
+            min-width: 70px;
+            max-height: 28px;
+            border-radius: 4px;
+        }
+        QPushButton:hover {
+            background-color: #e0e0e0;
+        }
+        """
+
+        action_buttons = [
+            ("导入数据", self.import_chart_data),  # 新增按钮
+            ("清空图表", self.clear_chart),
+            ("保存图片", self.save_chart_image),
+            ("导出数据", self.export_chart_data)
+        ]
+
+        for btn_text, handler in action_buttons:
+            btn = QPushButton(btn_text)
+            btn.setStyleSheet(button_style)
+            btn.clicked.connect(handler)
+            control_layout.addWidget(btn)
+
+        control_layout.addStretch(1)  # 右侧弹性空间
+        layout.addWidget(control_frame, stretch=0)
+
+        # ================= 统计面板区域 =================
+        stats_group = QGroupBox("偏差统计")
+        stats_group.setFont(QFont("Microsoft YaHei", 12))
         stats_layout = QHBoxLayout(stats_group)
 
         # 为每个电机创建统计面板
         self.stats_widgets = {}
         for motor in ["X", "Y", "Z", "A"]:
-            group = QGroupBox(f"电机 {motor}")
+            group = QGroupBox(f"电机{motor}")
             form = QFormLayout(group)
 
-            # 创建统计标签
             labels = {
                 'current': QLabel("0.00°"),
+                'theoretical': QLabel("0.00°"),
                 'average': QLabel("0.00°"),
-                'cumulative': QLabel("0.00°"),
                 'dev_rate': QLabel("N/A")
             }
 
@@ -1176,10 +1439,9 @@ class MotorControlApp(QMainWindow):
                 lbl.setFont(QFont("Roboto Mono", 10))
                 lbl.setAlignment(Qt.AlignRight)
 
-            # 添加表单项
             form.addRow("实时偏差:", labels['current'])
+            form.addRow("理论偏差:", labels['theoretical'])
             form.addRow("平均偏差:", labels['average'])
-            form.addRow("累计偏差:", labels['cumulative'])
             form.addRow("偏差率:", labels['dev_rate'])
 
             self.stats_widgets[motor] = labels
@@ -1187,16 +1449,235 @@ class MotorControlApp(QMainWindow):
 
         layout.addWidget(stats_group, stretch=1)
 
+    def clear_chart(self):
+        # 清空图表数据
+        self.chart_view.chart().clear()
+        # 重置偏差数据集
+        self.deviation_data = {m: deque(maxlen=100) for m in ["X", "Y", "Z", "A"]}
+        self.theoretical_deviations = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.target_angles = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.expected_rotation = {m: 0.0 for m in ["X", "Y", "Z", "A"]}
+        # 更新实时数据表
+        current_angles = {m: self.current_angles.get(m, 0.0) for m in ["X", "Y", "Z", "A"]}
+        deviations = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.update_angle_table(current_angles, self.target_angles, deviations)
+        # 重置统计数据和颜色
+        for motor in ["X", "Y", "Z", "A"]:
+            labels = self.stats_widgets[motor]
+            labels['current'].setText("N/A°")
+            labels['theoretical'].setText("N/A°")
+            labels['average'].setText("N/A°")
+            labels['dev_rate'].setText("N/A")
+            for label in labels.values():
+                label.setStyleSheet("color: black;")
+        self.log("图表和统计数据已重置")
+
+    def save_chart_image(self):
+        """保存为图片文件"""
+        options = QFileDialog.Options()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存图表", "",
+            "PNG图像 (*.png);;JPEG图像 (*.jpg)",
+            options=options
+        )
+
+        if path:
+            pixmap = self.chart_view.grab()
+            if pixmap.save(path):
+                self.log(f"图表已保存至 {path}")
+            else:
+                QMessageBox.warning(self, "错误", "图片保存失败")
+
+    def export_chart_data(self):
+        try:
+            import pandas as pd
+        except ImportError:
+            QMessageBox.critical(self, "错误", "请先安装pandas库：pip install pandas")
+            return
+        # 获取选择的电机
+        selected = self.export_motor_combo.currentText()
+        motor_map = {
+            "全部": ["X", "Y", "Z", "A"],
+            "X轴": ["X"],
+            "Y轴": ["Y"],
+            "Z轴": ["Z"],
+            "A轴": ["A"]
+        }
+        selected_motors = motor_map[selected]
+
+        # 获取数据并对齐长度
+        chart_data = self.chart_view.chart().get_chart_data()
+        max_length = max(len(chart_data[m]) for m in selected_motors)
+
+        # 填充缺失值为NaN
+        data_dict = {}
+        for motor in selected_motors:
+            values = chart_data[motor]
+            if len(values) < max_length:
+                values += [float('nan')] * (max_length - len(values))
+            data_dict[f"{motor}轴偏差"] = values
+        # 处理空数据情况
+        if not any(data_dict.values()):
+            QMessageBox.warning(self, "警告", "当前没有可导出的数据")
+            return
+        # 保存对话框
+        options = QFileDialog.Options()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出数据", "",
+            "Excel文件 (*.xlsx)",
+            options=options
+        )
+
+        if path:
+            try:
+                df = pd.DataFrame(data_dict)
+
+                # 添加时间戳索引
+                df.index.name = "采样序列"
+
+                with pd.ExcelWriter(path) as writer:
+                    df.to_excel(writer)
+
+                self.log(f"数据已导出至 {path}")
+            except Exception as e:
+                QMessageBox.critical(self, "导出错误", f"文件写入失败: {str(e)}")
+
+    # 在MotorControlApp类中添加以下方法
+    def import_chart_data(self):
+        """支持导入单轴Excel数据"""
+        try:
+            import pandas as pd
+        except ImportError:
+            QMessageBox.critical(self, "错误", "请先安装pandas库：pip install pandas")
+            return
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择数据文件", "",
+            "Excel文件 (*.xlsx);;CSV文件 (*.csv)",
+            options=options
+        )
+        if not file_path:
+            return
+        try:
+            # 读取数据文件
+            if file_path.endswith('.xlsx'):
+                df = pd.read_excel(file_path, index_col=0)
+            else:
+                df = pd.read_csv(file_path, index_col=0)
+            # 识别有效数据列
+            valid_columns = []
+            motor_mapping = {
+                'X轴偏差': 'X',
+                'Y轴偏差': 'Y',
+                'Z轴偏差': 'Z',
+                'A轴偏差': 'A'
+            }
+
+            # 检查至少包含一个有效列
+            for col in df.columns:
+                if col in motor_mapping:
+                    valid_columns.append(col)
+
+            if not valid_columns:
+                raise ValueError("未检测到有效偏差数据列（列名示例：X轴偏差）")
+            # 弹窗选择导入模式
+            mode = self._show_import_dialog()
+            if not mode:
+                return
+            # 处理数据导入
+            for col in valid_columns:
+                motor = motor_mapping[col]
+                data = df[col].dropna().tolist()
+
+                if mode == "replace":
+                    # 替换模式：清空现有数据
+                    self.chart_view.chart().data[motor].clear()
+                    self.chart_view.chart().data[motor].extend(data)
+                else:
+                    # 追加模式：添加到现有数据尾部
+                    self.chart_view.chart().data[motor].extend(data)
+
+                # 更新数据点（保留最近200个）
+                points = [QPointF(x, y) for x, y in enumerate(self.chart_view.chart().data[motor])]
+                self.chart_view.chart().series[motor].replace(points[-200:])
+            # 刷新显示
+            self.chart_view.chart().auto_scale_axes()
+            self._update_stats_after_import(df, valid_columns)
+            self.log(f"成功导入{len(valid_columns)}轴数据")
+        except Exception as e:
+            QMessageBox.critical(self, "导入错误", f"数据导入失败: {str(e)}")
+
+    def _show_import_dialog(self):
+        """显示导入选项对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("导入选项")
+        layout = QVBoxLayout(dialog)
+
+        # 模式选择
+        mode_group = QButtonGroup(dialog)
+        rb_replace = QRadioButton("替换现有数据", dialog)
+        rb_append = QRadioButton("追加到现有数据", dialog)
+        rb_replace.setChecked(True)
+
+        mode_group.addButton(rb_replace)
+        mode_group.addButton(rb_append)
+
+        # 确认按钮
+        btn_confirm = QPushButton("确认导入", dialog)
+        btn_confirm.clicked.connect(dialog.accept)
+
+        layout.addWidget(QLabel("请选择数据导入模式:"))
+        layout.addWidget(rb_replace)
+        layout.addWidget(rb_append)
+        layout.addWidget(btn_confirm)
+
+        if dialog.exec() == QDialog.Accepted:
+            return "replace" if rb_replace.isChecked() else "append"
+        return None
+
+    def _update_stats_after_import(self, df, valid_columns):
+        """更新统计信息（仅更新导入的轴）"""
+        for col in valid_columns:
+            motor = col[0]  # 从"X轴偏差"提取X
+            data = df[col].dropna()
+
+            if not data.empty:
+                labels = self.stats_widgets[motor]
+                labels['current'].setText(f"{data.iloc[-1]:.2f}°")
+                labels['average'].setText(f"{data.mean():.2f}°")
+                labels['cumulative'].setText(f"{data.sum():.2f}°")
+                labels['dev_rate'].setText(
+                    f"{(data.iloc[-1] / data.mean() * 100 if data.mean() != 0 else 0):.1f}%"
+                )
+
+    def _update_all_stats(self, df):
+        """更新所有统计信息"""
+        self.cumulative_deviations = {m: 0.0 for m in ["X", "Y", "Z", "A"]}
+
+        for motor in ["X", "Y", "Z", "A"]:
+            col = f"{motor}轴偏差"
+            data = df[col].dropna()
+
+            if not data.empty:
+                # 计算统计指标
+                current = data.iloc[-1]
+                avg = data.mean()
+                cumulative = data.sum()
+
+                # 更新累计偏差
+                self.cumulative_deviations[motor] = cumulative
+
+                # 更新显示
+                labels = self.stats_widgets[motor]
+                labels['current'].setText(f"{current:.2f}°")
+                labels['average'].setText(f"{avg:.2f}°")
+                labels['cumulative'].setText(f"{cumulative:.2f}°")
+                labels['dev_rate'].setText(f"{(current / avg * 100 if avg != 0 else 0):.1f}%")
+
     def request_angles(self):
         """发送获取角度指令"""
-        if self.serial_port and self.serial_port.is_open:
-            try:
-                self.serial_port.write("GETANGLE\n".encode())
-                self.log("已发送角度查询指令: GETANGLE")
-            except Exception as e:
-                self.log(f"指令发送失败: {str(e)}")
-        else:
-            QMessageBox.warning(self, "警告", "请先连接串口")
+        ANGLE_command = "GETANGLE"
+        self.send_command(ANGLE_command + "\r\n")
 
     def switch_tab(self, index):
         self.tab_widget.setCurrentIndex(index)
@@ -1204,48 +1685,74 @@ class MotorControlApp(QMainWindow):
         self.analysis_btn.setChecked(index == 3)
 
     def update_angles(self, data):
-        """更新电机显示（解决动画无更新问题）"""
-        # 确保数据完整性
-        if not all(m in data["current"] for m in ["X", "Y", "Z", "A"]):
-            return
+        """更新角度显示（适配新版数据结构）"""
+        try:
+            for motor in self.active_motors:
+                current_angle = data["current"].get(motor, 0)
+                self.motors[motor].set_angle(current_angle % 360)
+                self.angle_labels[motor].setText(f"{current_angle:.3f}°")
 
-        # 更新每个电机的显示
-        for motor in ["X", "Y", "Z", "A"]:
-            current = data["current"][motor]
-            target = data["targets"].get(motor)
-            deviation = data["deviations"].get(motor)
+            # 清空表格旧数据
+            for row in range(4):
+                for col in range(5):
+                    self.angle_table.setItem(row, col, QTableWidgetItem("N/A"))
+            # 仅更新启用电机
+            for motor in data["current"].keys():
+                row = ["X", "Y", "Z", "A"].index(motor)
 
-            # 更新动画和标签
-            if motor in self.motors:
-                self.motors[motor].set_angle(current)
-            if motor in self.angle_labels:
-                self.angle_labels[motor].setText(f"{current:.1f}°")
+                current = data["current"][motor]
+                target = data["targets"].get(motor, None)
+                theo_dev = data["theoretical"].get(motor, None)
+                real_dev = data["realtime"].get(motor, None)
+                # 填充表格数据
+                items = [
+                    self._create_centered_item(motor),
+                    self._create_centered_item(f"{current:.1f}°"),
+                    self._create_centered_item(f"{target:.1f}°" if target else "N/A"),
+                    self._create_centered_item(f"{theo_dev:.1f}°" if theo_dev else "N/A"),
+                    self._create_centered_item(f"{real_dev:.1f}°" if real_dev else "N/A")
+                ]
 
-            # 更新表格数据
-            self._update_angle_table_row(motor, current, target, deviation)
+                # 设置偏差颜色
+                for dev, col in [(theo_dev, 3), (real_dev, 4)]:
+                    if dev is not None:
+                        color = "#FF0000" if abs(dev) > 5 else "#FFA500" if abs(dev) > 2 else "black"
+                        items[col].setForeground(QColor(color))
+                for col in range(5):
+                    self.angle_table.setItem(row, col, items[col])
+
+        except Exception as e:
+            print(f"角度更新异常: {str(e)}")
+            traceback.print_exc()
 
     def _update_angle_table_row(self, motor, current, target, deviation):
-        """更新单个电机的表格行"""
+        """更新表格"""
         row = ["X", "Y", "Z", "A"].index(motor)
-
         # 创建表格项
         items = [
-            QTableWidgetItem(motor),
-            QTableWidgetItem(f"{current:.1f}°"),
-            QTableWidgetItem(f"{target:.1f}°" if target is not None else "N/A"),
-            QTableWidgetItem(f"{deviation:.1f}°" if deviation is not None else "N/A")
+            self._create_centered_item(motor),
+            self._create_centered_item(f"{current:.1f}°"),
+            self._create_centered_item(f"{target:.1f}°" if target is not None else "N/A"),
+            self._create_centered_item(f"{deviation:.1f}°" if deviation is not None else "N/A")
         ]
-
-        # 设置偏差颜色
+        # 偏差颜色设置
         if deviation is not None:
-            if abs(deviation) > 20:  # 应该不会出现，因为已经过滤
+            if abs(deviation) > 20:
                 items[-1].setForeground(QColor(255, 0, 0))
             elif abs(deviation) > 5:
                 items[-1].setForeground(QColor(255, 165, 0))
-
+        else:
+            # 当偏差为None时，恢复默认颜色
+            items[-1].setForeground(QColor(0, 0, 0))  # 黑色
         # 更新表格
         for col in range(4):
             self.angle_table.setItem(row, col, items[col])
+
+    def _create_centered_item(self, text):
+        """创建居中显示的表格项"""
+        item = QTableWidgetItem(str(text))
+        item.setTextAlignment(Qt.AlignCenter)
+        return item
 
     def update_angle_table(self, current_data, target_data, deviations):
         """更新实时角度表格（新增目标列）"""
@@ -1278,116 +1785,124 @@ class MotorControlApp(QMainWindow):
                 self.angle_table.setItem(row, col, item)
 
     def handle_serial_data(self, data):
-        """处理串口数据"""
+        """处理串口数据并计算两种偏差"""
         if data.startswith("ANGLE"):
-            # 正则匹配精确解析
-            matches = re.findall(r"([A-Z])(\d+\.\d{3})", data)
+            # 解析当前角度
+            current_angles = {}
+            matches = re.findall(r"([A-Z])(-?\d+\.\d{3})", data)
+            for motor, value in matches:
+                try:
+                    current_angles[motor] = float(value) % 360
+                except ValueError:
+                    current_angles[motor] = 0.0
 
-            if len(matches) == 4:
-                current_angles = {}
-                valid_deviations = {}
+            # 计算两种偏差
+            theoretical_deviations = {}
+            theoretical_targets = {}
+            realtime_deviations = {}
 
-                # 解析当前角度
-                for motor, value in matches:
-                    try:
-                        current_angles[motor] = float(value) % 360
-                        if hasattr(self, 'last_calibration_angles'):
-                            self.last_calibration_angles[motor].append(float(value))
-                            if len(self.last_calibration_angles[motor]) > 2:
-                                self.last_calibration_angles[motor].pop(0)
-                    except ValueError:
-                        return
-                # 计算有效偏差（仅当目标角度存在且偏差<=20°时）
-                for motor in ["X", "Y", "Z", "A"]:
-                    target = self.target_angles.get(motor)
-                    current = current_angles.get(motor)
-                    if target is not None and current is not None:
-                        # 计算标准化偏差（-180~180）
-                        deviation = (current - target + 180) % 360 - 180
+            for motor in ["X", "Y", "Z", "A"]:
+                # 仅处理启用电机
+                if motor not in self.active_motors:
+                    theoretical_deviations[motor] = None
+                    realtime_deviations[motor] = None
+                    theoretical_targets[motor] = None
+                    continue
 
-                        # 阈值检测
-                        if abs(deviation) <= 45:
-                            valid_deviations[motor] = deviation
-                        else:
-                            valid_deviations[motor] = None
-                    else:
-                        valid_deviations[motor] = None
+                current = current_angles.get(motor, 0.0)
 
-                    if motor in valid_deviations and valid_deviations[motor] is not None:
-                        self.deviation_data[motor].append(valid_deviations[motor])
-                    if valid_deviations[motor] is not None:
-                        self.cumulative_deviations[motor] += valid_deviations[motor]
-                # 更新界面
-                self.current_angles.update(current_angles)
-                self.update_stats_panel(valid_deviations)
+                # 实时偏差计算
+                if motor in self.pending_targets and self.pending_targets[motor] is not None:
+                    realtime_dev = (current - self.pending_targets[motor]) % 360
+                    realtime_dev = realtime_dev - 360 if realtime_dev > 180 else realtime_dev
+                    realtime_deviations[motor] = realtime_dev
+                else:
+                    realtime_deviations[motor] = None
 
+                # 理论偏差计算
+                if self.initial_angle_base.get(motor) is not None:
+                    theoretical_target = (self.initial_angle_base[motor] +
+                                          self.accumulated_rotation[motor]) % 360
+                    theoretical_targets[motor] = theoretical_target
+                    theoretical_dev = (current - theoretical_target) % 360
+                    if theoretical_dev > 180:
+                        theoretical_dev -= 360
+                    theoretical_deviations[motor] = theoretical_dev
+                else:
+                    theoretical_deviations[motor] = None
+                    theoretical_targets[motor] = None
 
-                # 触发角度更新信号（包含完整数据）
-                self.angle_update.emit({
-                    "current": current_angles,
-                    "targets": self.target_angles.copy(),
-                    "deviations": valid_deviations
-                })
+            # 自动校准处理（仅自动模式）
+            if self.running_mode == "auto" and self.auto_calibration_enabled:
+                for motor in self.active_motors:
+                    if theoretical_deviations[motor] is not None:
+                        self.theoretical_deviations[motor] = theoretical_deviations[motor]
 
-                # 更新分析图表（仅有效偏差）
-                if any(v is not None for v in valid_deviations.values()):
-                    self.chart_view.chart().update_data(valid_deviations)
+            # 更新界面数据
+            self.current_angles.update(current_angles)
+            filtered_data = {
+                "current": {k: v for k, v in current_angles.items() if k in self.active_motors},
+                "theoretical": {k: v for k, v in theoretical_deviations.items() if k in self.active_motors},
+                "realtime": {k: v for k, v in realtime_deviations.items() if k in self.active_motors},
+                "targets": {k: v for k, v in theoretical_targets.items() if k in self.active_motors}
+            }
+            self.angle_update.emit(filtered_data)  # 发送过滤后的数据
+            self.chart_view.chart().update_data(filtered_data)
+            self.update_stats_panel(filtered_data)
 
-
-
-    def update_stats_panel(self, current_deviations):
-        """更新统计面板"""
+    def update_stats_panel(self, data):
+        """更新统计面板，只处理启用的电机"""
         for motor in ["X", "Y", "Z", "A"]:
-            data = self.deviation_data[motor]
-            expected = self.expected_rotation[motor]
-            current_dev = current_deviations.get(motor)
-            cumulative = self.cumulative_deviations[motor]
-            # 计算统计指标
-            avg = self.calculate_average(data)
-
-            dev_rate = self.calculate_dev_rate(current_dev, expected)
-
-            # 获取对应控件
             labels = self.stats_widgets[motor]
 
-            # 更新显示（保留两位小数）
-            labels['current'].setText(f"{current_dev:.2f}°" if current_dev is not None else "N/A")
-            labels['average'].setText(f"{avg:.2f}°" if avg is not None else "N/A")
-            labels['cumulative'].setText(f"{cumulative:.2f}°")
-            labels['dev_rate'].setText(dev_rate)
+            # 重置未启用电机的显示
+            if motor not in self.active_motors:
+                self._set_stat_na(motor)
+                continue
 
-            # 设置异常值颜色
-            for label in labels.values():
-                label.setStyleSheet("color: black;")
+            # 获取最新数据
+            theo_dev = data["theoretical"].get(motor)
+            real_dev = data["realtime"].get(motor)
+            target = data["targets"].get(motor)
 
-            if current_dev is not None:
-                if abs(current_dev) > 20:  # 超过阈值的特殊显示
-                    labels['current'].setStyleSheet("color: red; font-weight: bold;")
-                elif abs(current_dev) > 5:
-                    labels['current'].setStyleSheet("color: orange;")
-    def calculate_average(self, data):
-        """安全计算平均值"""
-        if not data:
-            return None
-        try:
-            return sum(data)/len(data)
-        except Exception:
-            return None
+            # 计算平均偏差（使用历史数据）
+            motor_data = self.chart_view.chart().data[motor]
+            avg_dev = sum(motor_data) / len(motor_data) if motor_data else 0
 
+            # 计算偏差率（理论偏差/原始转动量）
+            raw_rotation = abs(self.expected_rotation.get(motor, 1))  # 避免除零
+            dev_rate = abs(theo_dev / raw_rotation * 100) if raw_rotation != 0 else 0
 
-    def calculate_dev_rate(self, current_dev, expected):
-        """计算偏差率（带安全校验）"""
-        if expected == 0 or current_dev is None:
-            return "N/A"
+            # 更新显示
+            labels['current'].setText(f"{real_dev:.2f}°" if real_dev is not None else "N/A")
+            labels['theoretical'].setText(f"{theo_dev:.2f}°" if theo_dev is not None else "N/A")
+            labels['average'].setText(f"{avg_dev:.2f}°")
+            labels['dev_rate'].setText(f"{dev_rate:.1f}%")
 
-        try:
-            rate = (current_dev / expected) * 100
-            if abs(rate) > 1000:  # 异常值处理
-                return ">1000%"
-            return f"{rate:.1f}%"
-        except Exception:
-            return "ERR"
+            # 根据偏差值设置颜色
+            self._update_stat_color(labels, theo_dev if theo_dev is not None else 0)
 
+    def _set_stat_na(self, motor):
+        """设置未启用电机的统计显示"""
+        labels = self.stats_widgets[motor]
+        for key in ['current', 'theoretical', 'average', 'dev_rate']:
+            labels[key].setText("N/A")
+            labels[key].setStyleSheet("color: gray;")
+
+    def _update_stat_color(self, labels, current_dev):
+        """根据偏差值更新统计颜色"""
+        dev_abs = abs(current_dev)
+        color = "black"  # 默认黑色
+
+        if dev_abs > 5.0:  # 严重偏差
+            color = "#FF0000"  # 红色
+        elif dev_abs > 2.0:  # 警告偏差
+            color = "#FFA500"  # 橙色
+
+        # 只更新数值标签的颜色
+        for label in [labels['current'], labels['theoretical'],
+                      labels['average'], labels['dev_rate']]:
+            label.setStyleSheet(f"color: {color};")
 
     def set_size_policy(self, h_policy, v_policy):
         """通用尺寸策略设置方法"""
@@ -1528,13 +2043,202 @@ class MotorControlApp(QMainWindow):
         save_btn.setFont(QFont("Microsoft YaHei", 16))
         save_btn.clicked.connect(self.save_manual_preset)
 
+        del_manual_btn = QPushButton("删除")
+        del_manual_btn.clicked.connect(lambda: self.delete_preset('manual'))
+
+
         preset_layout.addWidget(preset_lbl)
         preset_layout.addWidget(self.manual_preset_combo)
         preset_layout.addWidget(load_btn)
         preset_layout.addWidget(save_btn)
+        preset_layout.addWidget(del_manual_btn)
         hbox.addWidget(preset_frame)
 
         layout.addWidget(control_frame)
+
+        # +++ 新增定时运行控件 +++
+        timer_frame = QFrame()
+        timer_layout = QHBoxLayout(timer_frame)
+
+        # 定时运行标签
+        timer_label = QLabel("定时运行:")
+        timer_label.setFont(QFont("Microsoft YaHei", 16))
+
+        # 时间输入框
+        self.timer_input = QLineEdit()
+        self.timer_input.setPlaceholderText("时长")
+        self.timer_input.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_input.setFixedWidth(100)
+
+        # 时间单位选择
+        self.time_unit_combo = QComboBox()
+        self.time_unit_combo.addItems(["秒", "分钟", "小时"])
+        self.time_unit_combo.setFont(QFont("Microsoft YaHei", 16))
+        self.time_unit_combo.setFixedWidth(100)
+
+        # 按钮容器
+        btn_container = QFrame()
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 运行按钮
+        self.timer_run_btn = QPushButton("运行")
+        self.timer_run_btn.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_run_btn.clicked.connect(self.start_timed_run)
+
+        # 新增按钮
+        self.timer_pause_btn = QPushButton("暂停")
+        self.timer_pause_btn.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_pause_btn.clicked.connect(self.pause_timed_run)
+        self.timer_pause_btn.setEnabled(False)
+
+        self.timer_resume_btn = QPushButton("继续")
+        self.timer_resume_btn.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_resume_btn.clicked.connect(self.resume_timed_run)
+        self.timer_resume_btn.setEnabled(False)
+
+        self.timer_cancel_btn = QPushButton("取消")
+        self.timer_cancel_btn.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_cancel_btn.clicked.connect(self.cancel_timed_run)
+        self.timer_cancel_btn.setEnabled(False)
+        btn_layout.addWidget(self.timer_run_btn)
+        btn_layout.addWidget(self.timer_pause_btn)
+        btn_layout.addWidget(self.timer_resume_btn)
+        btn_layout.addWidget(self.timer_cancel_btn)
+
+        timer_layout.addWidget(timer_label)
+        timer_layout.addWidget(self.timer_input)
+        timer_layout.addWidget(self.time_unit_combo)
+        timer_layout.addWidget(btn_container)
+        layout.addWidget(timer_frame)
+        # 定时器相关初始化
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_timer)
+        self.remaining_seconds = 0
+        self.is_paused = False
+        self.paused_seconds = 0
+
+    def start_timed_run(self):
+        # 验证输入
+        try:
+            duration = float(self.timer_input.text())
+            unit = self.time_unit_combo.currentText()
+
+            # 转换为秒
+            if unit == "分钟":
+                duration *= 60
+            elif unit == "小时":
+                duration *= 3600
+
+            if duration <= 0:
+                raise ValueError("时长必须大于0")
+
+        except ValueError as e:
+            QMessageBox.critical(self, "输入错误", str(e))
+            return
+        # 发送持续运行指令
+        if not self.send_continuous_run_command():
+            return
+        # 启动定时器
+        self.remaining_seconds = int(duration)
+        self.timer.start(1000)  # 每秒更新
+        self.timer_run_btn.setEnabled(False)
+        self.update_status_message()
+        # 更新按钮状态
+        self.timer_run_btn.setEnabled(False)
+        self.timer_pause_btn.setEnabled(True)
+        self.timer_cancel_btn.setEnabled(True)
+        self.timer_resume_btn.setEnabled(False)
+        self.is_paused = False
+
+    def send_continuous_run_command(self):
+        # 生成持续运行指令（例如：XEFV100JG YEFV200JG）
+        command = ""
+        for motor in ["X", "Y", "Z", "A"]:
+            widgets = self.motor_widgets[motor]
+            if widgets["enable"].isChecked():
+                speed = widgets["speed"].text()
+                if not speed.isdigit():
+                    QMessageBox.critical(self, "错误", f"电机{motor}速度值无效")
+                    return False
+                direction = "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
+                command += f"{motor}E{direction}V{speed}JG"
+
+        if not command:
+            QMessageBox.critical(self, "错误", "没有启用的电机")
+            return False
+
+        return self.send_command(command + "\r\n")
+
+    def update_timer(self):
+        if not self.is_paused:
+            self.remaining_seconds -= 1
+            if self.remaining_seconds <= 0:
+                self.stop_timed_run()
+                self.send_stop_command()
+            self.update_status_message()
+
+    def update_status_message(self):
+        mins, secs = divmod(self.remaining_seconds, 60)
+        hours, mins = divmod(mins, 60)
+        time_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
+        self.status_bar.showMessage(f"运行中 - 剩余时间: {time_str}")
+
+    def pause_timed_run(self):
+        # 发送急停指令（示例指令，需根据实际协议调整）
+        command = "".join([f"{motor}DFV0J0" for motor in ["X", "Y", "Z", "A"]])
+        self.send_command(command + "\r\n")
+        self.timer.stop()
+        self.is_paused = True
+        self.paused_seconds = self.remaining_seconds
+
+        # 更新按钮状态
+        self.timer_pause_btn.setEnabled(False)
+        self.timer_resume_btn.setEnabled(True)
+        self.status_bar.showMessage(f"运行已暂停，剩余时间: {self.format_time(self.paused_seconds)}")
+
+    def resume_timed_run(self):
+        if not self.send_continuous_run_command():
+            return
+        self.remaining_seconds = self.paused_seconds
+        self.timer.start(1000)
+        self.is_paused = False
+
+        # 更新按钮状态
+        self.timer_pause_btn.setEnabled(True)
+        self.timer_resume_btn.setEnabled(False)
+        self.update_status_message()
+
+    def cancel_timed_run(self):
+        self.timer.stop()
+        self.send_stop_command()
+        self.remaining_seconds = 0
+        self.is_paused = False
+
+        # 更新按钮状态
+        self.timer_run_btn.setEnabled(True)
+        self.timer_pause_btn.setEnabled(False)
+        self.timer_resume_btn.setEnabled(False)
+        self.timer_cancel_btn.setEnabled(False)
+        self.status_bar.showMessage("运行已取消")
+
+    def format_time(self, seconds):
+        mins, secs = divmod(seconds, 60)
+        hours, mins = divmod(mins, 60)
+        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+    def stop_timed_run(self):
+        self.timer.stop()
+        self.timer_run_btn.setEnabled(True)
+        self.timer_pause_btn.setEnabled(False)
+        self.timer_resume_btn.setEnabled(False)
+        self.timer_cancel_btn.setEnabled(False)
+        self.status_bar.showMessage("定时运行完成")
+
+    def send_stop_command(self):
+        # 发送脱机指令（例如：XDFV0J0 YDFV0J0）
+        command = "".join([f"{motor}DFV0J0" for motor in ["X", "Y", "Z", "A"]])
+        self.send_command(command + "\r\n")
 
     def init_auto_tab(self):
         layout = QVBoxLayout(self.auto_tab)
@@ -1554,12 +2258,15 @@ class MotorControlApp(QMainWindow):
         load_btn.clicked.connect(self.load_auto_preset)
         save_btn = QPushButton("保存")
         save_btn.clicked.connect(self.save_auto_preset)
+        del_auto_btn = QPushButton("删除")
+        del_auto_btn.clicked.connect(lambda: self.delete_preset('auto'))
 
         # 将控件添加到布局
         hbox.addWidget(QLabel("自动预设:"))
         hbox.addWidget(self.auto_preset_combo)
         hbox.addWidget(load_btn)
         hbox.addWidget(save_btn)
+        hbox.addWidget(del_auto_btn)
         layout.addWidget(preset_frame)
 
         # 步骤表格
@@ -1585,6 +2292,8 @@ class MotorControlApp(QMainWindow):
         buttons = [
             ("添加步骤", self.add_step),
             ("删除步骤", self.remove_step),
+            ("复制步骤", self.copy_step),
+            ("粘贴步骤", self.paste_step),
             ("开始执行", self.start_automation),
             ("停止执行", self.stop_automation)
         ]
@@ -1687,43 +2396,141 @@ class MotorControlApp(QMainWindow):
                 self.update_steps_table()
                 self.log(f"步骤 {step_index + 1} 已编辑")
 
+    def delete_preset(self, preset_type):
+        """删除预设的通用方法"""
+        combo = self.manual_preset_combo if preset_type == 'manual' else self.auto_preset_combo
+        preset_name = combo.currentText()
+        if not preset_name:
+            QMessageBox.warning(self, "警告", "请先选择要删除的预设")
+            return
+        # 确认对话框
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除预设 '{preset_name}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            full_name = f"{preset_type}_{preset_name}"
+            if full_name in self.presets:
+                del self.presets[full_name]
+                PresetManager.save_presets(self.presets)
+                self.update_preset_combos()
+                self.log(f"预设 '{preset_name}' 已删除")
+            else:
+                QMessageBox.critical(self, "错误", "找不到指定的预设")
+
+    # 新增步骤复制粘贴功能
+    def copy_step(self):
+        selected = self.steps_table.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "警告", "请先选择要复制的步骤")
+            return
+
+        item = selected[0]
+        step_index = self.steps_table.indexOfTopLevelItem(item)
+        if 0 <= step_index < len(self.automation_steps):
+            self.copied_step = self.automation_steps[step_index].copy()
+            self.log(f"已复制步骤 {step_index + 1}")
+
+    def paste_step(self):
+        if not self.copied_step:
+            QMessageBox.warning(self, "警告", "请先复制一个步骤")
+            return
+        # 获取插入位置
+        selected = self.steps_table.selectedItems()
+        insert_index = len(self.automation_steps)  # 默认插入末尾
+        if selected:
+            insert_index = self.steps_table.indexOfTopLevelItem(selected[0])
+        # 创建新步骤并插入
+        new_step = self.copied_step.copy()
+        new_step['name'] = f"{new_step.get('name', '步骤')} (副本)"
+        self.automation_steps.insert(insert_index, new_step)
+        self.update_steps_table()
+        self.log(f"已粘贴步骤到位置 {insert_index + 1}")
+
     def generate_command(self, step_params):
-        """生成控制指令并记录目标角度"""
+        """生成带校准的指令"""
         command = ""
-        self.expected_changes.clear()
+        self.pending_targets = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.expected_rotation = {m: 0 for m in ["X", "Y", "Z", "A"]}  # 记录原始转动量
+        direction_map = {"F": 1, "B": -1}
+
+        # 自动模式初始基准设置
+        if self.running_mode == "auto" and self.is_first_command:
+            for motor in self.active_motors:
+                # 优先使用发送前读取的角度
+                if self.current_angles[motor] is not None:
+                    self.initial_angle_base[motor] = self.current_angles[motor]
+                else:
+                    # 标记需要等待第一次反馈设置基准
+                    self.initial_angle_base[motor] = None
 
         for motor in ["X", "Y", "Z", "A"]:
             config = step_params.get(motor, {})
             enable = config.get("enable", "D")
             direction = config.get("direction", "F")
             speed = config.get("speed", "0")
-            angle = config.get("angle", "0").upper()
+            raw_angle = config.get("angle", "0").upper()
             is_continuous = config.get("continuous", False)
 
+            if enable != "E" or motor not in self.active_motors:
+                command += f"{motor}DFV0J0"
+                continue
+
+            # 方向系数
+            dir_factor = direction_map[direction]
+
             try:
-                angle_val = float(angle)
-                angle = f"{angle_val:.3f}"
-            except ValueError:
-                pass
+                if is_continuous:
+                    # 持续模式处理
+                    command += f"{motor}EFV{speed}JG"
+                    self.pending_targets[motor] = None
+                    continue
 
-            # 生成命令部分
-            cmd = f"{motor}{enable}{direction}V{speed}"
-            if is_continuous:
-                cmd += "JG"
-            else:
-                cmd += f"J{angle}"
-            command += cmd
-            # 计算目标角度（非持续模式且电机启用时）
-            if enable == "E" and not is_continuous:
-                try:
-                    current = self.current_angles.get(motor, 0)
-                    delta = float(angle) * (1 if direction == "F" else -1)
-                    self.target_angles[motor] = (current + delta) % 360  # 更新目标角度
-                    self.expected_rotation[motor] = float(config.get("angle", 0))
-                except (ValueError, TypeError):
-                    self.target_angles[motor] = None
-                    self.expected_rotation[motor] = 0
+                # 记录原始转动量（用于偏差率计算）
+                raw_rotation = float(raw_angle)
+                self.expected_rotation[motor] = raw_rotation  # 保存原始值
 
+                # 理论角度计算
+                if self.running_mode == "auto":
+                    # 初始基准尚未设置时（第一条指令且未读取到角度）
+                    if self.initial_angle_base[motor] is None:
+                        # 使用当前角度作为基准（可能为0，后续收到反馈会更新）
+                        base = self.current_angles.get(motor, 0.0)
+                        self.initial_angle_base[motor] = base
+
+                    # 累积原始转动量（未校准的）
+                    raw_rotation = float(raw_angle) * dir_factor
+                    self.accumulated_rotation[motor] += raw_rotation
+
+                    # 校准补偿
+                    if self.auto_calibration_enabled:
+                        compensation = (self.theoretical_deviations.get(motor) or 0.0) * self.calibration_amplitude
+                        calibrated_rotation = raw_rotation - compensation
+                    else:
+                        calibrated_rotation = raw_rotation
+
+                    # 实际发送的转动量
+                    actual_rotation = abs(calibrated_rotation)
+
+                    # 更新期望角度
+                    self.expected_angles[motor] = (
+                            (self.initial_angle_base[motor] +
+                             self.accumulated_rotation[motor]) % 360)
+
+                else:  # 手动模式
+                    actual_rotation = float(raw_angle)
+                    current = self.current_angles.get(motor, 0.0)
+                    self.pending_targets[motor] = (current + actual_rotation * dir_factor) % 360
+
+                # 构造指令
+                command += f"{motor}E{direction}V{speed}J{actual_rotation:.3f}"
+
+            except ValueError as e:
+                self.log(f"电机{motor}参数错误: {str(e)}")
+                command += f"{motor}DFV0J0"
+
+        self.is_first_command = False
         return command + "\r\n"
 
     def get_available_ports(self):
@@ -1824,6 +2631,8 @@ class MotorControlApp(QMainWindow):
 
     def send_manual_command(self):
         params = {}
+        active_motors = set()
+        self.running_mode = "manual"
         for motor, widgets in self.motor_widgets.items():
             params[motor] = {
                 "enable": "E" if widgets["enable"].isChecked() else "D",
@@ -1832,6 +2641,8 @@ class MotorControlApp(QMainWindow):
                 "angle": widgets["angle"].text().upper(),
                 "continuous": widgets["continuous"].isChecked()
             }
+            if params[motor]["enable"] == "E":
+                active_motors.add(motor)
             # 验证输入
             if not params[motor]["speed"].isdigit():
                 QMessageBox.critical(self, "输入错误", f"电机{motor}速度值无效")
@@ -1839,7 +2650,7 @@ class MotorControlApp(QMainWindow):
             if not (params[motor]["angle"].isdigit() or params[motor]["angle"] == "G"):
                 QMessageBox.critical(self, "输入错误", f"电机{motor}角度值无效")
                 return
-
+        self.active_motors = active_motors
         command = self.generate_command(params)
         if self.send_command(command):
             self.status_bar.showMessage("手动指令已发送")
@@ -1899,6 +2710,12 @@ class MotorControlApp(QMainWindow):
                 QMessageBox.critical(self, "错误", "无效的循环次数")
                 return
 
+            self.running_mode = "auto"
+            self.is_first_command = True
+            for motor in ["X", "Y", "Z", "A"]:
+                self.initial_angle_base[motor] = None if self.current_angles[motor] is None else self.current_angles[
+                    motor]
+                self.accumulated_rotation[motor] = 0.0
 
             # 初始化线程
             self.automation_thread = AutomationThread(
@@ -1972,23 +2789,19 @@ class MotorControlApp(QMainWindow):
             self.serial_port.close()
         event.accept()
 
+
+
     def stop_automation(self):
         if self.automation_thread is not None:
-            # 请求线程停止
-            self.automation_thread.stop()
-            # 确保线程安全结束
-            if self.automation_thread.isRunning():
-                self.automation_thread.quit()
-                self.automation_thread.wait(1000)
-            self.automation_thread = None  # 确保在此处置空
+            # 使用新的安全停止方法
+            self.automation_thread.safe_stop()
+
+            # 清理线程引用
+            self.automation_thread = None
+
         self.running = False
         self.log("自动化运行已停止")
-        if self.serial_port and self.serial_port.is_open:
-            try:
-                self.serial_port.reset_input_buffer()
-                self.serial_port.reset_output_buffer()
-            except:
-                pass
+        self.status_bar.showMessage("自动化运行已停止")
 
     def on_automation_finished(self):
         self.status_bar.showMessage("自动化运行完成")
@@ -1998,6 +2811,7 @@ class MotorControlApp(QMainWindow):
             self.automation_thread = None
 
     def update_steps_table(self):
+        scroll_pos = self.steps_table.verticalScrollBar().value()
         current_steps = [s for s in self.automation_steps if isinstance(s, dict)]
 
         # 获取当前所有项
@@ -2013,6 +2827,9 @@ class MotorControlApp(QMainWindow):
         # 删除多余项
         for i in range(len(current_steps), len(existing_items)):
             self.steps_table.takeTopLevelItem(len(current_steps))
+
+        # 恢复滚动位置
+        self.steps_table.verticalScrollBar().setValue(scroll_pos)
 
     def _update_step_item(self, item, step, idx):
         params_desc = []
@@ -2192,7 +3009,6 @@ if __name__ == "__main__":
     QApplication.setHighDpiScaleFactorRoundingPolicy(
        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    #ctypes.windll.ntdll.RtlSetHeapProtection(ctypes.c_void_p(-1), ctypes.c_ulong(0x00000001))
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(':/meow.ico'))

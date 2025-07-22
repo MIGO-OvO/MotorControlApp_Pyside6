@@ -1,964 +1,19 @@
 {
-  "manual_\u6d4b\u8bd5": {
-    "X": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "0",
-      "angle": "0",
-      "continuous": false
-    },
-    "Y": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "20",
-      "angle": "360",
-      "continuous": false
-    },
-    "Z": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "20",
-      "angle": "360",
-      "continuous": false
-    },
-    "A": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "0",
-      "angle": "0",
-      "continuous": false
-    }
-  },
-  "auto_\u6d4b\u8bd5": {
-    "steps": [
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "720"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "700",
-          "angle": "70"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      }
-    ],
-    "loop_count": "1"
-  },
-  "auto_\u6d4b\u8bd52": {
-    "steps": [
-      {
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "720"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      }
-    ],
-    "loop_count": "1"
-  },
-  "auto_\u6d4b\u8bd53": {
-    "steps": [
-      {
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "720"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "name": "XZ",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "700",
-          "angle": "70"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      },
-      {
-        "name": "X",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "800",
-          "angle": "80"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 1000
-      }
-    ],
-    "loop_count": "1"
-  },
-  "manual_\u6d4b\u8bd52": {
-    "X": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "8000",
-      "angle": "90",
-      "continuous": false
-    },
-    "Y": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "0",
-      "angle": "0",
-      "continuous": false
-    },
-    "Z": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "8000",
-      "angle": "90",
-      "continuous": true
-    },
-    "A": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "0",
-      "angle": "0",
-      "continuous": false
-    }
-  },
-  "auto_\u9ad8\u901f\u6d4b\u8bd5": {
-    "steps": [
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "720"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "700",
-          "angle": "70"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "800",
-          "angle": "80"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      }
-    ],
-    "loop_count": "10"
-  },
-  "auto_\u6027\u80fd\u6d4b\u8bd5": {
-    "steps": [
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "720"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "360"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "700",
-          "angle": "70"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "800",
-          "angle": "80"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "300"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "3000",
-          "angle": "300"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "A": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      },
-      {
-        "name": "",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "300",
-          "angle": "300"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 100
-      }
-    ],
-    "loop_count": "0"
-  },
-  "manual_\u6d4b\u8bd51": {
-    "X": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "0",
-      "angle": "0",
-      "continuous": false
-    },
-    "Y": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "20",
-      "angle": "360",
-      "continuous": false
-    },
-    "Z": {
-      "enable": "D",
-      "direction": "F",
-      "speed": "20",
-      "angle": "360",
-      "continuous": false
-    },
-    "A": {
-      "enable": "E",
-      "direction": "F",
-      "speed": "20",
-      "angle": "360",
-      "continuous": false
-    }
-  },
   "auto_\u7cbe\u5ea6\u6d4b\u8bd5": {
     "steps": [
       {
         "name": "",
         "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
           "enable": "E",
           "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
           "speed": "20",
-          "angle": "120"
+          "angle": "60"
         },
         "Z": {
           "enable": "D",
@@ -972,183 +27,10 @@
           "speed": "0",
           "angle": "0"
         },
-        "interval": 3000
+        "interval": 5000
       }
     ],
     "loop_count": "0"
-  },
-  "auto_\u6f14\u793a": {
-    "steps": [
-      {
-        "name": "\u8fdb\u6cb9",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "720"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 3000
-      },
-      {
-        "name": "\u6df7\u5408\u8bd5\u6837",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "360"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "360"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 2500
-      },
-      {
-        "name": "\u8f93\u9001",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "1080"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 4000
-      },
-      {
-        "name": "\u6df7\u54082",
-        "X": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "360"
-        },
-        "interval": 2500
-      },
-      {
-        "name": "\u8fdb\u68c0\u6d4b",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "720"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 4000
-      },
-      {
-        "name": "\u6392\u6837",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "720"
-        },
-        "Y": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "Z": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "A": {
-          "enable": "D",
-          "direction": "F",
-          "speed": "0",
-          "angle": "0"
-        },
-        "interval": 4000
-      }
-    ],
-    "loop_count": "1"
   },
   "manual_\u8fdb\u6837": {
     "X": {
@@ -1243,10 +125,40 @@
       "continuous": false
     }
   },
-  "auto_\u89d2\u5ea6\u6d4b\u8bd52": {
+  "manual_\u9884\u70ed": {
+    "X": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "Y": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "Z": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "A": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    }
+  },
+  "auto_\u7a33\u5b9a\u6d4b\u8bd5": {
     "steps": [
       {
-        "name": "",
+        "name": "yz (\u526f\u672c)",
         "X": {
           "enable": "D",
           "direction": "F",
@@ -1256,8 +168,453 @@
         "Y": {
           "enable": "E",
           "direction": "F",
-          "speed": "20",
+          "speed": "10",
           "angle": "60"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "yz",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      }
+    ],
+    "loop_count": "20"
+  },
+  "auto_\u6db2\u6ef4\u5747\u5300\u5ea6\u6d4b\u8bd5": {
+    "steps": [
+      {
+        "name": "yz (\u526f\u672c)",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "yz",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "15",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "15",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      }
+    ],
+    "loop_count": "100"
+  },
+  "auto_\u5747\u5300\u5ea62": {
+    "steps": [
+      {
+        "name": "yz (\u526f\u672c)",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "8",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 8000
+      },
+      {
+        "name": "yz",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "15",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "8",
+          "angle": "120"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 10000
+      }
+    ],
+    "loop_count": "10"
+  },
+  "auto_\u5747\u5300\u5ea6": {
+    "steps": [
+      {
+        "name": "yz (\u526f\u672c)",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "8",
+          "angle": "180"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 10000
+      },
+      {
+        "name": "yz",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "15",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "8",
+          "angle": "120"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 10000
+      }
+    ],
+    "loop_count": "0"
+  },
+  "auto_\u6db2\u6ef4\u5747\u5300\u5ea6": {
+    "steps": [
+      {
+        "name": "yz (\u526f\u672c)",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "8",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "yz",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "10",
+          "angle": "120"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "15",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "8",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      }
+    ],
+    "loop_count": "0"
+  },
+  "auto_\u6f14\u793a": {
+    "steps": [
+      {
+        "name": "\u8f7d\u6837",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "120"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "\u8fdb\u6cb9",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "180"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "\u6df7\u54081",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "5",
+          "angle": "60"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "60"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "\u63a8\u6837",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "360"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "\u6df7\u54082",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "60"
+        },
+        "interval": 5000
+      },
+      {
+        "name": "\u63a8\u6837",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "360"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
         },
         "Z": {
           "enable": "D",
@@ -1274,123 +631,158 @@
         "interval": 5000
       }
     ],
-    "loop_count": "10"
+    "loop_count": "1"
   },
-  "auto_\u57fa\u51c6\u6d4b\u8bd5": {
+  "auto_\u6d4b\u8bd5": {
     "steps": [
       {
-        "name": "\u6b63\u8f6c1",
+        "name": "\u8fdb\u6cb9",
         "X": {
-          "enable": "E",
+          "enable": "D",
           "direction": "F",
-          "speed": "20",
-          "angle": "60"
+          "speed": "0",
+          "angle": "0"
         },
         "Y": {
-          "enable": "E",
+          "enable": "D",
           "direction": "F",
-          "speed": "20",
-          "angle": "60"
+          "speed": "0",
+          "angle": "0"
         },
         "Z": {
-          "enable": "E",
+          "enable": "D",
           "direction": "F",
-          "speed": "20",
-          "angle": "60"
+          "speed": "8",
+          "angle": "360"
         },
         "A": {
           "enable": "E",
           "direction": "F",
-          "speed": "20",
-          "angle": "60"
+          "speed": "8",
+          "angle": "720"
         },
-        "interval": 4000
+        "interval": 26000
       },
       {
-        "name": "\u53cd\u8f6c",
+        "name": "\u8bd5\u6837\u6df7\u5408",
         "X": {
           "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
+          "direction": "F",
+          "speed": "8",
+          "angle": "360"
         },
         "Y": {
-          "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
+          "enable": "D",
+          "direction": "F",
+          "speed": "8",
+          "angle": "120"
         },
         "Z": {
           "enable": "E",
           "direction": "B",
-          "speed": "20",
-          "angle": "60"
+          "speed": "8",
+          "angle": "360"
         },
         "A": {
-          "enable": "E",
+          "enable": "D",
           "direction": "B",
-          "speed": "20",
-          "angle": "60"
+          "speed": "8",
+          "angle": "120"
         },
-        "interval": 4000
-      },
-      {
-        "name": "\u6b63\u53cd\u8f6c",
-        "X": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "60"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "60"
-        },
-        "A": {
-          "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
-        },
-        "interval": 4000
-      },
-      {
-        "name": "\u53cd\u6b63\u8f6c",
-        "X": {
-          "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
-        },
-        "Y": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "60"
-        },
-        "Z": {
-          "enable": "E",
-          "direction": "B",
-          "speed": "20",
-          "angle": "60"
-        },
-        "A": {
-          "enable": "E",
-          "direction": "F",
-          "speed": "20",
-          "angle": "60"
-        },
-        "interval": 4000
+        "interval": 14000
       }
     ],
-    "loop_count": "3"
+    "loop_count": "0"
+  },
+  "manual_Y\u6d4b\u8bd5": {
+    "X": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "Y": {
+      "enable": "E",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "Z": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    },
+    "A": {
+      "enable": "D",
+      "direction": "F",
+      "speed": "5",
+      "angle": "360",
+      "continuous": false
+    }
+  },
+  "auto_\u4e9a\u785d\u9178\u76d0": {
+    "steps": [
+      {
+        "name": "",
+        "X": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "180"
+        },
+        "Y": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Z": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 14000
+      },
+      {
+        "name": "",
+        "X": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "Y": {
+          "enable": "E",
+          "direction": "B",
+          "speed": "5",
+          "angle": "180"
+        },
+        "Z": {
+          "enable": "E",
+          "direction": "F",
+          "speed": "5",
+          "angle": "180"
+        },
+        "A": {
+          "enable": "D",
+          "direction": "F",
+          "speed": "0",
+          "angle": "0"
+        },
+        "interval": 14000
+      }
+    ],
+    "loop_count": "0"
   }
 }
