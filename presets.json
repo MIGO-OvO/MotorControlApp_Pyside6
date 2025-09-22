@@ -36,28 +36,28 @@
     "X": {
       "enable": "E",
       "direction": "F",
-      "speed": "10",
+      "speed": "5",
       "angle": "360",
-      "continuous": true
+      "continuous": false
     },
     "Y": {
       "enable": "E",
       "direction": "F",
-      "speed": "10",
+      "speed": "5",
       "angle": "360",
-      "continuous": true
+      "continuous": false
     },
     "Z": {
-      "enable": "D",
+      "enable": "E",
       "direction": "F",
-      "speed": "20",
+      "speed": "5",
       "angle": "360",
       "continuous": false
     },
     "A": {
-      "enable": "D",
+      "enable": "E",
       "direction": "F",
-      "speed": "20",
+      "speed": "5",
       "angle": "360",
       "continuous": false
     }
