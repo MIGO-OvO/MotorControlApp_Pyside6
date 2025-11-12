@@ -1,977 +1,67 @@
-# main.py
+"""
+主窗口（完整功能版）
+完整迁移自原始main.py，保留所有功能和UI布局
+"""
+import sys
+import os
+
+# 路径设置
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# 标准库
 import ctypes
 import json
-import os
 import re
-import sys
 import threading
 import time
 import traceback
 import weakref
-import resource
 import serial
 import platform
 import math
 from collections import deque
 import csv
-import datetime
+from datetime import datetime
 import numpy as np
 
-# 动态导入可选的依赖库，并提供友好的错误提示
+# Windows特定导入
+if platform.system() == 'Windows':
+    from ctypes import windll
+
+# 可选依赖
 try:
     import nidaqmx
     from nidaqmx.constants import TerminalConfiguration
     import pyqtgraph as pg
-
     NIDAQMX_AVAILABLE = True
 except ImportError:
     NIDAQMX_AVAILABLE = False
+    nidaqmx = None
+    pg = None
 
-
-    # 创建占位符，以防程序在没有库的情况下崩溃
-    class DAQThread:
-        pass
-
-
-    class pg:
-        pass
-
-if platform.system() == 'Windows':
-    from ctypes import windll
-
-    windll.winmm.timeBeginPeriod(1)
-from datetime import datetime
-
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("motor.control.v1")
+# PySide6
 from serial.tools import list_ports
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QFrame, QLabel, QPushButton, QTextEdit,
-    QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout, QTreeWidget,
+    QComboBox, QLineEdit, QGridLayout, QVBoxLayout, QHBoxLayout,
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
-    QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy, QHeaderView, QTableWidget, QTableWidgetItem,
-    QFormLayout, QGraphicsDropShadowEffect, QGraphicsView, QFileDialog, QSplitter,
-    QSpinBox, QDoubleSpinBox, QScrollArea
+    QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy, 
+    QHeaderView, QTableWidget, QTableWidgetItem, QFormLayout,
+    QFileDialog, QSplitter, QSpinBox, QDoubleSpinBox, QScrollArea, QTreeWidget
 )
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QModelIndex, QTimer, QPointF, QPropertyAnimation, QEasingCurve, \
-    QMargins
-from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush, QLinearGradient, QGradient, \
-    QPainterPath, QDoubleValidator, QAction
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QLegend, QScatterSeries
-
-# 样式表 (保持不变)
-MACOS_STYLE = """
-QWidget {
-    font-family: 'Times New Roman', 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
-    font-size: 18px;
-    color: #000000;
-    background-color: #FFFFFF;
-}
-
-QGroupBox {
-    border: 1px solid #D3D3D3;
-    border-radius: 10px;
-    margin-top: 8px;
-    padding-top: 12px;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    color: #1d1d1f;
-    font-weight: 500;
-}
-
-QPushButton {
-    background-color: #007aff;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 16px;
-    min-width: 80px;
-}
-
-QPushButton:hover {
-    background-color: #0063cc;
-}
-
-QPushButton:pressed {
-    background-color: #004999;
-}
-
-QPushButton:disabled {
-    background-color: #C0C0C0;
-}
-
-QComboBox, QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
-    border: 1px solid #d1d1d6;
-    border-radius: 6px;
-    padding: 6px;
-    background: white;
-    selection-background-color: #007aff;
-}
-
-QTreeWidget {
-    border: 1px solid #d1d1d6;
-    border-radius: 8px;
-    background: white;
-    alternate-background-color: #f5f5f7;
-}
-
-QStatusBar {
-    background: #ffffff;
-    border-top: 1px solid #d1d1d6;
-    color: #6e6e73;
-}
-
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-}
-
-QRadioButton::indicator {
-    width: 18px;
-    height: 18px;
-}
-
-QTabWidget::pane {
-    border: 0;
-}
-
-MotorStatusButton {
-    background-color: #007aff;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 16px;
-    min-width: 80px;
-}
-MotorStatusButton:checked {
-    background-color: #004999;
-}
-MotorCircle {
-    border: 2px solid #007aff;
-    border-radius: 50%;
-}
-ChartWidget {
-    background-color: white;
-    border-radius: 8px;
-    padding: 15px;
-}
-"""
-
-# --- 从 ABS.py 移植过来的 DAQThread ---
-if NIDAQMX_AVAILABLE:
-    class DAQThread(QThread):
-        data_acquired = Signal(float)
-        error_occurred = Signal(str)
-
-        def __init__(self, device_name, channel_name, sample_rate, parent=None):
-            super().__init__(parent)
-            self.device_name = device_name
-            self.channel_name = channel_name
-            self.sample_rate = sample_rate
-            self.running = False
-            self.task = None
-            self.start_time = time.time()
-
-        def run(self):
-            try:
-                self.running = True
-                self.task = nidaqmx.Task()
-                self.task.ai_channels.add_ai_voltage_chan(
-                    self.channel_name,
-                    terminal_config=TerminalConfiguration.RSE
-                )
-
-                interval = 1.0 / self.sample_rate
-
-                while self.running:
-                    start_time = time.time()
-                    voltage = self.task.read()
-                    self.data_acquired.emit(voltage)
-
-                    # 控制采样率
-                    elapsed = time.time() - start_time
-                    sleep_time = max(0, interval - elapsed)
-                    time.sleep(sleep_time)
-
-            except Exception as e:
-                self.error_occurred.emit(str(e))
-            finally:
-                if self.task:
-                    self.task.close()
-                    self.task = None
-
-        def stop(self):
-            self.running = False
-            if self.isRunning():
-                self.wait(500)  # 等待线程结束
-
-
-# --- 以下是原有 main.py 的类 ---
-
-class IOSSwitch(QCheckBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(60, 30)
-        self.setStyleSheet("""
-            QCheckBox {
-                background-color: #e5e5e5;
-                border-radius: 15px;
-            }
-            QCheckBox::indicator {
-                width: 30px;
-                height: 30px;
-                border-radius: 15px;
-                background-color: white;
-                border: 1px solid #cccccc;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #34c759;
-                border: none;
-                image: none;
-                margin-left: 30px;
-            }
-        """)
-
-
-class MotorCircle(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._angle = 0
-        self.target_angle = 0
-        self.setFixedSize(150, 150)
-
-        # 先初始化动画相关属性
-        self.animation = QPropertyAnimation(self, b"angle")
-        self.animation.setDuration(1000)
-        self.animation.setEasingCurve(QEasingCurve.OutCubic)
-
-    def set_angle(self, angle):
-        self.target_angle = angle
-        if hasattr(self, 'animation'):
-            self.animation.stop()
-            self.animation.setStartValue(self._angle)
-            self.animation.setEndValue(angle)
-            self.animation.start()
-        self._angle = angle
-        self.update()  # 触发重绘
-
-    def get_angle(self):
-        return self._angle
-
-    angle = property(get_angle, set_angle)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # 绘制背景圆
-        painter.setPen(QPen(QColor(200, 200, 200), 4))
-        painter.drawEllipse(10, 10, 130, 130)
-
-        # 绘制转轴
-        painter.setPen(QPen(QColor(0, 122, 255), 5))
-        painter.setBrush(QBrush(QColor(0, 122, 255, 50)))
-        radius = 50
-        center = QPointF(75, 75)
-        end_x = center.x() + radius * math.cos(math.radians(self.angle - 90))
-        end_y = center.y() + radius * math.sin(math.radians(self.angle - 90))
-        painter.drawLine(center, QPointF(end_x, end_y))
-        painter.drawEllipse(center, 15, 15)
-
-    angle = property(get_angle, set_angle)
-
-
-class AnalysisChart(QChart):
-    def __init__(self):
-        super().__init__()
-        self.series = {}
-        self.markers = {}
-        self.data = {
-            "X": deque(maxlen=10000),
-            "Y": deque(maxlen=10000),
-            "Z": deque(maxlen=10000),
-            "A": deque(maxlen=10000)
-        }
-        self.init_chart()
-        self.setup_axes()
-        self.auto_scale_margin = 0.1  # 10%的边距
-
-    def init_chart(self):
-
-        colors = [
-            QColor("#1f77b4"),  # 蓝色
-            QColor("#2ca02c"),  # 绿色
-            QColor("#d62728"),  # 红色
-            QColor("#9467bd")  # 紫色
-        ]
-        # 创建系列并设置样式
-        for i, motor in enumerate(["X", "Y", "Z", "A"]):
-            # 主曲线设置
-            main_series = QLineSeries()
-            pen = QPen(colors[i])
-            pen.setWidth(2)
-            pen.setStyle(Qt.SolidLine)
-            main_series.setPen(pen)
-            main_series.setName(f"Motor {motor}")
-            # 数据标记设置
-            marker_series = QScatterSeries()
-            marker_series.setMarkerSize(6)
-            marker_series.setColor(colors[i])
-            marker_series.setBorderColor(Qt.black)
-            marker_series.setMarkerShape(QScatterSeries.MarkerShapeCircle)
-            # 存储系列引用
-            self.series[motor] = main_series
-            self.markers[motor] = marker_series
-            # 添加到图表
-            self.addSeries(main_series)
-            self.addSeries(marker_series)
-        # 坐标轴设置
-        self.axisX = QValueAxis()
-        self.axisY = QValueAxis()
-
-        # X轴样式
-        self.axisX.setTitleText("Time Sequence")
-        self.axisX.setTitleFont(QFont("Times New Roman", 18))
-        self.axisX.setLabelsFont(QFont("Times New Roman", 12))
-        self.axisX.setGridLineColor(QColor(220, 220, 220))
-        self.axisX.setLinePen(QPen(Qt.black, 1.5))
-        self.axisX.setLabelFormat("%d")
-        # Y轴样式
-        self.axisY.setTitleText("Deviation（°）")
-        self.axisY.setTitleFont(QFont("Times New Roman", 18))
-        self.axisY.setLabelsFont(QFont("Times New Roman", 12))
-        self.axisY.setGridLineColor(QColor(220, 220, 220))
-        self.axisY.setLinePen(QPen(Qt.black, 1.5))
-        self.axisY.setLabelFormat("%.2f")
-        # 添加坐标轴
-        self.addAxis(self.axisX, Qt.AlignBottom)
-        self.addAxis(self.axisY, Qt.AlignLeft)
-
-        # 将系列附加到坐标轴
-        for series in self.series.values():
-            series.attachAxis(self.axisX)
-            series.attachAxis(self.axisY)
-            series.setUseOpenGL(True)  # 启用硬件加速
-            series.setPointsVisible(False)
-
-        # 标记点优化
-        for marker in self.markers.values():
-            marker.setBorderColor(Qt.transparent)  # 移除黑色边框
-            marker.setBrush(QBrush(Qt.SolidPattern))
-
-        # 图例设置
-        self.legend().setVisible(True)
-        self.legend().setAlignment(Qt.AlignTop)
-        self.legend().setFont(QFont("Times New Roman", 14))
-        self.legend().setLabelColor(Qt.black)
-
-        # 图表整体样式
-        self.setBackgroundVisible(False)
-        self.setMargins(QMargins(10, 10, 10, 5))
-        self.setContentsMargins(0, 0, 0, 0)
-
-    def setup_axes(self):
-        # 初始化轴范围
-        self.axisX.setRange(0, 60)
-        self.axisY.setRange(-5, 5)
-
-        # 设置轴自适应策略
-        self.axisX.setLabelFormat("%.0f")
-        self.axisY.setLabelFormat("%.2f")
-        self.axisY.applyNiceNumbers()
-
-    def update_data(self, deviations):
-        """只更新启用电机的数据"""
-        # 获取当前活动电机（从父窗口）
-        parent = self.parent()
-        active_motors = parent.active_motors if hasattr(parent, 'active_motors') else ["X", "Y", "Z", "A"]
-
-        # 过滤数据，只处理活动电机
-        valid_data = {
-            k: round(v, 3)
-            for k, v in deviations.get("theoretical", {}).items()
-            if v is not None and k in self.data and k in active_motors
-        }
-
-        # 更新数据存储
-        for motor, dev in valid_data.items():
-            self.data[motor].append(dev)
-            points = [QPointF(x, y) for x, y in enumerate(self.data[motor])]
-            self.series[motor].replace(points[-100:])  # 只显示最近100个点
-
-            # 更新标记点（只显示最新点）
-            if points:
-                marker_point = [points[-1]]
-                self.markers[motor].replace(marker_point)
-
-        # 智能坐标轴调整
-        self.auto_scale_axes()
-
-    def auto_scale_axes(self):
-        """智能坐标轴缩放算法"""
-        # Y轴缩放
-        y_values = [y for d in self.data.values() for y in d]
-        if y_values:
-            y_min = min(y_values)
-            y_max = max(y_values)
-            y_range = y_max - y_min
-
-            # 动态边距计算
-            margin = y_range * self.auto_scale_margin if y_range != 0 else 1
-            self.axisY.setRange(y_min - margin, y_max + margin)
-        else:
-            self.axisY.setRange(-5, 5)  # 默认范围
-        # X轴智能缩放
-        max_length = max(len(d) for d in self.data.values())
-        if max_length > 0:
-            visible_points = 100  # 默认显示100个点
-            start = max(0, max_length - visible_points)
-            self.axisX.setRange(start, max_length)
-        else:
-            self.axisX.setRange(0, 100)
-
-    def clear(self):
-        """清空所有数据"""
-        for motor in ["X", "Y", "Z", "A"]:
-            self.data[motor].clear()
-            self.series[motor].replace([])
-            self.markers[motor].replace([])
-        self.setup_axes()
-        self.update()
-
-    def get_chart_data(self):
-        """获取当前图表数据"""
-        return {
-            motor: list(self.data[motor])
-            for motor in ["X", "Y", "Z", "A"]
-        }
-
-    def get_motor_data(self, motor):
-        """获取指定电机的完整数据"""
-        return list(self.data.get(motor, []))
-
-    def replace_data(self, motor, data_points):
-        """替换指定电机的数据序列"""
-        if motor in self.series:
-            points = [QPointF(x, y) for x, y in enumerate(data_points)]
-            self.series[motor].replace(points)
-            self.data[motor] = deque(data_points, maxlen=200)
-            self.auto_scale_axes()
-
-
-class PresetManager:
-    PRESETS_FILE = "presets.json"
-
-    def __init__(self, win):
-        self.win = win
-
-    def __del__(self):
-        self.win = None
-
-    @classmethod
-    def load_presets(cls):
-        if not os.path.exists(cls.PRESETS_FILE):
-            return {}
-        try:
-            with open(cls.PRESETS_FILE, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"加载预设文件错误: {str(e)}")
-            return {}
-
-    @classmethod
-    def save_presets(cls, presets):
-        try:
-            with open(cls.PRESETS_FILE, 'w') as f:
-                json.dump(presets, f, indent=2)
-        except Exception as e:
-            QMessageBox.critical(None, "保存错误", f"无法保存预设文件: {str(e)}")
-
-
-class DragDropTreeWidget(QTreeWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)  # 设置为内部移动模式
-        self.setDropIndicatorShown(True)
-        self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
-        self.setIndentation(0)  # 删除缩进防止误操作
-        self.setRootIsDecorated(False)  # 隐藏根项装饰
-        self.setExpandsOnDoubleClick(False)  # 禁止双击展开
-        self.setDragDropOverwriteMode(True)  # 禁止创建子项
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-
-    def dropEvent(self, event):
-        """重写drop事件精确控制项目移动"""
-        dragged_item = self.currentItem()
-        if not dragged_item:
-            return
-
-        # 获取目标位置
-        drop_pos = event.position().toPoint()
-        target_item = self.itemAt(drop_pos)
-
-        # 计算插入位置
-        new_index = self.indexAt(drop_pos).row()
-        new_index = max(0, new_index) if new_index != -1 else self.topLevelItemCount()
-
-        # 执行移动逻辑
-        if dragged_item.parent() is None:  # 确保是顶级项
-            # 移除原始项目
-            source_index = self.indexOfTopLevelItem(dragged_item)
-            item = self.takeTopLevelItem(source_index)
-
-            # 插入到新位置
-            if new_index >= self.topLevelItemCount():
-                self.addTopLevelItem(item)
-            else:
-                self.insertTopLevelItem(new_index, item)
-
-            # 设置选中状态
-            self.setCurrentItem(item)
-
-        # 添加同步调用
-        parent_app = self.window()
-        if isinstance(parent_app, MotorControlApp):
-            parent_app.sync_automation_steps_order()
-
-        event.accept()
-
-
-class MotorStepConfig(QDialog):
-    def __init__(self, parent, step_num, initial_params=None):
-        super().__init__(parent)
-        self.parent = weakref.ref(parent)
-        self.step_params = initial_params or {}
-        self.motors = ["X", "Y", "Z", "A"]
-        self.setWindowTitle(f"步骤 {step_num} 参数配置")
-        self.setFixedSize(500, 650)
-        self.setWindowModality(Qt.ApplicationModal)
-        self.init_ui()
-        self.load_initial_params()
-
-    def init_ui(self):
-        layout = QGridLayout()
-        self.widgets = {}
-
-        # 添加步骤名称输入框
-        name_frame = QFrame()
-        hbox = QHBoxLayout(name_frame)
-        name_lbl = QLabel("步骤名称:")
-        name_lbl.setFont(QFont("Microsoft YaHei", 16))
-        self.name_entry = QLineEdit()
-        self.name_entry.setFont(QFont("Microsoft YaHei", 16))
-        self.name_entry.setFixedHeight(40)
-        self.name_entry.setPlaceholderText("输入步骤名称")
-        hbox.addWidget(name_lbl)
-        hbox.addWidget(self.name_entry)
-        layout.addWidget(name_frame, 0, 0, 1, 2)
-
-        # 电机控制区
-        for i, motor in enumerate(self.motors):
-            group = QGroupBox(f"电机 {motor}")
-            group.setFont(QFont("Microsoft YaHei", 13))
-            vbox = QVBoxLayout(group)
-
-            # 启用开关
-            enable_check = QCheckBox("启用电机")
-            enable_check.setFont(QFont("Microsoft YaHei", 16))
-            vbox.addWidget(enable_check)
-
-            # 方向选择
-            dir_group = QButtonGroup(self)
-            dir_frame = QFrame()
-            hbox = QHBoxLayout(dir_frame)
-            forward_btn = QRadioButton("正转")
-            backward_btn = QRadioButton("反转")
-            forward_btn.setFont(QFont("Microsoft YaHei", 16))
-            backward_btn.setFont(QFont("Microsoft YaHei", 16))
-            dir_group.addButton(forward_btn)
-            dir_group.addButton(backward_btn)
-            forward_btn.setChecked(True)
-            hbox.addWidget(forward_btn)
-            hbox.addWidget(backward_btn)
-            vbox.addWidget(dir_frame)
-
-            # 参数输入
-            speed_entry = QLineEdit()
-            speed_entry.setPlaceholderText("速度值 (RPM)")
-            speed_entry.setFont(QFont("Microsoft YaHei", 16))
-            speed_entry.setFixedHeight(40)
-            vbox.addWidget(speed_entry)
-
-            angle_entry = QLineEdit()
-            angle_entry.setPlaceholderText("角度值")
-            angle_entry.setFont(QFont("Microsoft YaHei", 16))
-            angle_entry.setFixedHeight(40)
-            vbox.addWidget(angle_entry)
-
-            self.widgets[motor] = {
-                "enable": enable_check,
-                "direction": dir_group,
-                "speed": speed_entry,
-                "angle": angle_entry
-            }
-
-            layout.addWidget(group, (i // 2) + 1, i % 2)
-
-        # 间隔时间
-        interval_frame = QFrame()
-        hbox = QHBoxLayout(interval_frame)
-        interval_lbl = QLabel("间隔时间（ms）:")
-        interval_lbl.setFont(QFont("Microsoft YaHei", 16))
-        self.interval_entry = QLineEdit()
-        self.interval_entry.setFont(QFont("Microsoft YaHei", 16))
-        self.interval_entry.setFixedHeight(40)
-        hbox.addWidget(interval_lbl)
-        hbox.addWidget(self.interval_entry)
-        layout.addWidget(interval_frame, 3, 0, 1, 2)
-
-        # 按钮区域
-        btn_frame = QFrame()
-        hbox_btn = QHBoxLayout(btn_frame)
-        cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(self.reject)
-        confirm_btn = QPushButton("确认")
-        confirm_btn.clicked.connect(self.save_params)
-        hbox_btn.addWidget(cancel_btn)
-        hbox_btn.addWidget(confirm_btn)
-        layout.addWidget(btn_frame, 4, 0, 1, 2)
-
-        self.setLayout(layout)
-
-    def load_initial_params(self):
-        if self.step_params:
-            self.name_entry.setText(self.step_params.get("name", ""))
-            for motor in self.motors:
-                params = self.step_params.get(motor, {})
-                widgets = self.widgets[motor]
-                widgets["enable"].setChecked(params.get("enable", "D") == "E")
-                if params.get("direction", "F") == "F":
-                    widgets["direction"].buttons()[0].setChecked(True)
-                else:
-                    widgets["direction"].buttons()[1].setChecked(True)
-                widgets["speed"].setText(params.get("speed", ""))
-                widgets["angle"].setText(params.get("angle", ""))
-            self.interval_entry.setText(str(self.step_params.get("interval", 0)))
-
-    def save_params(self):
-        try:
-            params = {}
-            params["name"] = self.name_entry.text()
-            for motor in self.motors:
-                widgets = self.widgets[motor]
-                enable = "E" if widgets["enable"].isChecked() else "D"
-                direction = "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
-
-                # 处理速度值（空值默认为0）
-                speed_text = widgets["speed"].text().strip()
-                if not speed_text:
-                    speed = "0"
-                else:
-                    try:
-                        speed_val = float(speed_text)
-                        if speed_val < 0:
-                            raise ValueError
-                        speed = f"{speed_val:.1f}".rstrip('0').rstrip('.')  # 保留1位小数并优化格式
-                    except ValueError:
-                        raise ValueError(f"电机{motor}速度值无效")
-
-                # 处理角度值（空值默认为0，支持G指令）
-                angle_text = widgets["angle"].text().strip().upper()
-                if not angle_text:
-                    angle = "0"
-                elif angle_text == "G":
-                    angle = "G"
-                else:
-                    try:
-                        angle_val = float(angle_text)
-                        if angle_val < 0:
-                            raise ValueError
-                        angle = f"{angle_val:.3f}".rstrip('0').rstrip('.')  # 保留3位小数并优化格式
-                    except ValueError:
-                        raise ValueError(f"电机{motor}角度值无效")
-
-                params[motor] = {
-                    "enable": enable,
-                    "direction": direction,
-                    "speed": speed,
-                    "angle": angle
-                }
-
-            # 处理间隔时间（空值默认为5000ms）
-            interval_text = self.interval_entry.text().strip()
-            if not interval_text:
-                interval = 5000
-            else:
-                try:
-                    interval = int(interval_text)
-                    if interval < 0:
-                        raise ValueError("间隔时间不能为负数")
-                except ValueError:
-                    raise ValueError("间隔时间必须为0或正整数")
-            params["interval"] = interval
-
-            self.step_params = params
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "输入错误", str(e))
-
-
-class SerialReader(QThread):
-    data_received = Signal(str)
-
-    def __init__(self, serial_port):
-        super().__init__()
-        self.serial_port = serial_port
-        self.running = True
-        self.buffer = ''
-
-    def run(self):
-        while self.running:
-            if self.serial_port and self.serial_port.is_open:
-                try:
-                    if self.serial_port.in_waiting > 0:
-                        raw_data = self.serial_port.read(self.serial_port.in_waiting)
-                        try:
-                            data = raw_data.decode('utf-8')
-                        except UnicodeDecodeError:
-                            data = raw_data.decode('utf-8', errors='replace')
-                        self.buffer += data  # 数据累积到缓冲区
-                        # 分割完整行
-                        while '\n' in self.buffer:
-                            line, self.buffer = self.buffer.split('\n', 1)
-                            line = line.strip()
-                            if line:
-                                self.data_received.emit(line)
-                except Exception as e:
-                    print(f"Serial read error: {str(e)}")
-                    break
-            time.sleep(0.01)  # 防止CPU占用过高
-
-    def stop(self):
-        self.running = False
-        if self.isRunning():
-            self.wait(200)
-
-
-class AutomationThread(QThread):
-    update_status = Signal(str)
-    error_occurred = Signal(str)
-    finished = Signal()
-    progress_updated = Signal(int)
-
-    def __init__(self, parent, steps, loop_count, serial_port):
-        super().__init__()
-        self.parent_ref = weakref.ref(parent)
-        self.steps = self._deep_copy_steps(steps)
-        self.loop_count = loop_count
-        self.serial_port = serial_port  # 使用主线程的串口实例
-        self._running = threading.Event()
-        self._running.set()
-        self._paused = threading.Event()
-        self._current_step = 0
-        self._current_loop = 1
-        self.lock = parent.serial_lock
-
-    def safe_stop(self):
-        """停止"""
-        self._running.clear()
-        self._paused.clear()
-
-        # 尝试中断任何可能的阻塞操作
-        with self.lock:
-            if self.serial_port and self.serial_port.is_open:
-                try:
-                    # 发送紧急停止指令
-                    self.serial_port.write(b"XDFV0J0 YDFV0J0 ZDFV0J0 ADFV0J0\r\n")
-                    self.serial_port.flush()
-                except Exception:
-                    pass
-
-                # 关闭串口（仅关闭自动化线程的副本）
-                try:
-                    self.serial_port.close()
-                except Exception:
-                    pass
-
-        # 等待线程安全退出
-        if self.isRunning():
-            self.wait(1000)  # 最多等待1秒
-
-    def _deep_copy_steps(self, steps):
-        """拷贝方法"""
-        try:
-            return json.loads(json.dumps(steps))
-        except Exception as e:
-            self.error_occurred.emit(f"步骤数据解析失败: {str(e)}")
-            return []
-
-    def run(self):
-        try:
-            while self._running.is_set() and self._should_continue():
-                try:
-                    # 在关键操作前增加停止检查
-                    if not self._running.is_set():
-                        break
-
-                    self._execute_loop()
-                except serial.SerialException as e:
-                    self.error_occurred.emit(f"串口通信失败: {str(e)}")
-                    break
-                except Exception as e:
-                    self.error_occurred.emit(f"未知错误: {str(e)}")
-                    break
-        except Exception as e:
-            self.error_occurred.emit(f"线程初始化失败: {str(e)}")
-        finally:
-            # 确保最终清理
-            try:
-                with self.lock:
-                    if self.serial_port and self.serial_port.is_open:
-                        self.serial_port.close()
-            except Exception:
-                pass
-
-            self.finished.emit()
-
-    def _should_continue(self):
-        """线程继续条件判断"""
-        if self.loop_count == 0:
-            return True
-        return self._current_loop <= self.loop_count
-
-    def _execute_loop(self):
-        """执行单个循环"""
-        self.update_status.emit(f"自动运行中 (循环 {self._current_loop}/{self.loop_count or '∞'})...")
-        self.progress_updated.emit(0)  # 重置进度
-
-        for step_idx, step in enumerate(self.steps):
-            if not self._running.is_set():
-                break
-
-            # 暂停处理
-            while self._paused.is_set():
-                time.sleep(0.1)
-
-            self._current_step = step_idx
-            self.progress_updated.emit(int((step_idx + 1) / len(self.steps) * 100))
-
-            if not self._send_step_command(step):
-                break
-
-            self._wait_interval(step.get("interval", 0))
-
-        self._current_loop += 1
-
-    def _send_step_command(self, step):
-        """发送步骤命令"""
-        # 首先检查是否已停止
-        if not self._running.is_set():
-            return False
-
-        try:
-            parent = self.parent_ref()
-            if not parent or not self.serial_port:
-                return False
-
-            command = parent.generate_command(step)
-
-            # 再次检查是否已停止
-            if not self._running.is_set():
-                return False
-
-            with self.lock:  # 使用主线程的串口锁
-                # 发送前再次检查
-                if not self._running.is_set():
-                    return False
-
-                if not self.serial_port.is_open:
-                    self.error_occurred.emit("串口连接已断开")
-                    return False
-
-                try:
-                    self.serial_port.write(command.encode('utf-8'))
-                    self.serial_port.flush()
-                    parent.log(f"指令已发送: {command.strip()}")
-                    return True
-                except (serial.SerialException, OSError) as e:
-                    self.error_occurred.emit(f"指令发送失败: {str(e)}")
-                    return False
-
-        except Exception as e:
-            self.error_occurred.emit(f"发送指令异常: {str(e)}")
-            return False
-
-    def _wait_interval(self, interval_ms):
-        """超高精度间隔等待（误差<3ms）"""
-        interval = interval_ms / 1000  # 转换为秒
-        if interval <= 0:
-            return
-
-        # 使用最高精度时钟
-        get_time = time.perf_counter
-        deadline = get_time() + interval
-        error_correction = 0.0  # 误差修正量
-
-        while get_time() < deadline and self._running.is_set():
-            # 计算剩余时间（考虑误差修正）
-            remaining = deadline - get_time() - error_correction
-
-            if remaining <= 0.002:  # 2ms时进入最终阶段
-                break
-
-            # 动态睡眠策略
-            if remaining > 0.01:  # 10ms以上使用分级睡眠
-                sleep_time = remaining * 0.75  # 保留25%余量
-                sleep_time = max(sleep_time, 0.005)  # 最小睡眠5ms
-                t1 = get_time()
-                time.sleep(sleep_time)
-                t2 = get_time()
-                error_correction += (t2 - t1) - sleep_time  # 累计误差
-            else:  # 10ms以下使用自适应忙等待
-                while (get_time() + error_correction) < deadline:
-                    if (deadline - get_time()) > 0.002:  # 2ms时切换微睡眠
-                        time.sleep(0.001)
-                    pass
-
-        # 最终修正阶段
-        while (get_time() + error_correction) < deadline:
-            pass
-
-        # 检查暂停状态（优化后的检查频率）
-        check_pause_interval = 0.005  # 5ms检查一次
-        while self._paused.is_set():
-            t1 = get_time()
-            time.sleep(check_pause_interval)
-            deadline += get_time() - t1  # 延长截止时间
-
-    def _cleanup_resources(self):
-        """资源清理"""
-        with self.lock:
-            if self.safe_serial and self.safe_serial.is_open:
-                try:
-                    self.safe_serial.close()
-                except Exception:
-                    pass
-            self.safe_serial = None
-
-    def stop(self):
-        """安全停止"""
-        self._running.clear()
-        self._paused.clear()
-        if self.isRunning():
-            self.wait(2500)  # 增加等待时间
-
-    def pause(self):
-        self._paused.set()
-
-    def resume(self):
-        self._paused.clear()
-
+from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QMargins
+from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush, QDoubleValidator
+from PySide6.QtCharts import QChartView
+
+# 导入重构后的组件
+from src.config.constants import MACOS_STYLE
+from src.ui.widgets import IOSSwitch, MotorCircle, AnalysisChart, DragDropTreeWidget
+from src.ui.dialogs.motor_step_config import MotorStepConfig
+from src.hardware.daq_thread import DAQThread
+from src.hardware.serial_reader import SerialReader
+from src.core.automation_engine import AutomationThread
 
 class MotorControlApp(QMainWindow):
     log_signal = Signal(str)
@@ -979,6 +69,9 @@ class MotorControlApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        # --- 新增：设置文件路径 ---
+        self.settings_file = "data/settings.json"
 
         # --- 初始化光谱仪相关变量 ---
         if not NIDAQMX_AVAILABLE:
@@ -999,15 +92,21 @@ class MotorControlApp(QMainWindow):
         self.running = False
         self.serial_lock = threading.Lock()
         self.loop_count = 0
-        self.presets = PresetManager.load_presets()
+        # 使用重构后的PresetManager
+        from src.core.preset_manager import PresetManager as PM
+        self._preset_manager = PM()
+        self.presets = self._preset_manager.presets
         self.automation_thread = None
         self.log_signal.connect(self._log_impl)
         self.init_ui()
         self.update_preset_combos()
         self.setStyleSheet(MACOS_STYLE)
-        self.setMinimumSize(1080, 800)
-        self.resize(1080, 800)
-        self.setWindowIcon(QIcon(':/meow.ico'))
+        self.setMinimumSize(1280, 960)
+        self.resize(1280, 960)
+        try:
+            self.setWindowIcon(QIcon('resources/icons/meow.ico'))
+        except:
+            pass
         self.angle_update.connect(self.update_angles)
         self.expected_changes = {}  # 记录每个电机理论转动角度
         self.last_angles = {}  # 记录上一次接收到的角度
@@ -1028,6 +127,9 @@ class MotorControlApp(QMainWindow):
         self.is_first_command = True  # 是否是第一条指令
         self.running_mode = "manual"
         self.calibration_amplitude = 1.0
+
+        # --- 新增：加载设置 ---
+        self.load_settings()
 
     def init_ui(self):
         self.setWindowTitle("环境现场监测系统控制程序")
@@ -1492,7 +594,8 @@ class MotorControlApp(QMainWindow):
         if not self.spectro_data_log:
             QMessageBox.warning(self, "保存错误", "没有数据可以保存")
             return
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"absorbance_data_{timestamp}.csv"
         path, _ = QFileDialog.getSaveFileName(self, "保存数据", filename, "CSV Files (*.csv)")
         if not path: return
@@ -1662,12 +765,14 @@ class MotorControlApp(QMainWindow):
         self.send_calibration_command()
 
     def send_calibration_command(self):
-        motor_commands = {}
+        # 优化点 1: 使用列表只存储需要校准的电机指令
+        active_commands = []
         for motor in ["X", "Y", "Z", "A"]:
+            # 优化点 2: 只处理被选中的电机
             if self.calibration_switches[motor].isChecked():
                 current_angle = (self.current_angles.get(motor, 0.0) or 0.0) % 360
 
-                # 计算最短路径
+                # 计算最短路径以归零
                 if current_angle > 180:
                     target_angle = 360 - current_angle
                     direction = "EF"  # 正向转动
@@ -1676,13 +781,16 @@ class MotorControlApp(QMainWindow):
                     direction = "EB"  # 反向转动
 
                 # 生成校准指令（固定速度5RPM，三位小数精度）
-                motor_commands[motor] = f"{motor}{direction}V5J{target_angle:.3f}"
-            else:
-                # 未选择的电机发送停转指令
-                motor_commands[motor] = f"{motor}DFV0J0"
+                command_part = f"{motor}{direction}V5J{target_angle:.3f}"
+                active_commands.append(command_part)
 
-        # 按X/Y/Z/A顺序拼接完整指令
-        full_command = "".join([motor_commands[m] for m in ["X", "Y", "Z", "A"]]) + "\r\n"
+        # 优化点 3: 检查是否有任何指令生成，避免发送空指令
+        if not active_commands:
+            QMessageBox.warning(self, "提示", "请至少选择一个需要校准的电机。")
+            return
+
+        # 优化点 4: 仅拼接有效指令
+        full_command = "".join(active_commands) + "\r\n"
 
         if self.send_command(full_command):
             # 发送校准命令后等待10秒再读取角度
@@ -1696,7 +804,7 @@ class MotorControlApp(QMainWindow):
     def send_angle_request(self):
         self.request_angles()  # 发送获取角度指令
         # 等待50ms后处理校准结果
-        QTimer.singleShot(50, self.process_calibration_result)
+        QTimer.singleShot(100, self.process_calibration_result)
 
     def process_calibration_result(self):
         validation_passed = True
@@ -2815,7 +1923,7 @@ class MotorControlApp(QMainWindow):
             full_name = f"{preset_type}_{preset_name}"
             if full_name in self.presets:
                 del self.presets[full_name]
-                PresetManager.save_presets(self.presets)
+                self._preset_manager.save_all()
                 self.update_preset_combos()
                 self.log(f"预设 '{preset_name}' 已删除")
             else:
@@ -2851,89 +1959,86 @@ class MotorControlApp(QMainWindow):
         self.log(f"已粘贴步骤到位置 {insert_index + 1}")
 
     def generate_command(self, step_params):
-        """生成带校准的指令"""
+        """生成带校准的指令（优化版：只为启用的电机生成指令）"""
         command = ""
+        command_active_motors = set()
         self.pending_targets = {m: None for m in ["X", "Y", "Z", "A"]}
-        self.expected_rotation = {m: 0 for m in ["X", "Y", "Z", "A"]}  # 记录原始转动量
+        self.expected_rotation = {m: 0 for m in ["X", "Y", "Z", "A"]}
         direction_map = {"F": 1, "B": -1}
 
-        # 自动模式初始基准设置
+        # 自动模式初始基准设置 (逻辑保持不变)
         if self.running_mode == "auto" and self.is_first_command:
             for motor in self.active_motors:
-                # 优先使用发送前读取的角度
                 if self.current_angles[motor] is not None:
                     self.initial_angle_base[motor] = self.current_angles[motor]
                 else:
-                    # 标记需要等待第一次反馈设置基准
                     self.initial_angle_base[motor] = None
 
         for motor in ["X", "Y", "Z", "A"]:
             config = step_params.get(motor, {})
             enable = config.get("enable", "D")
+
+            # 核心修改：如果电机未启用，则直接跳过，不生成任何指令
+            if enable != "E":
+                continue
+
+            # 如果程序执行到这里，说明电机已启用
+            command_active_motors.add(motor)
+
             direction = config.get("direction", "F")
             speed = config.get("speed", "0")
             raw_angle = config.get("angle", "0").upper()
             is_continuous = config.get("continuous", False)
-
-            if enable != "E" or motor not in self.active_motors:
-                command += f"{motor}DFV0J0"
-                continue
-
-            # 方向系数
             dir_factor = direction_map[direction]
 
             try:
                 if is_continuous:
-                    # 持续模式处理
                     command += f"{motor}EFV{speed}JG"
                     self.pending_targets[motor] = None
                     continue
 
-                # 记录原始转动量（用于偏差率计算）
                 raw_rotation = float(raw_angle)
-                self.expected_rotation[motor] = raw_rotation  # 保存原始值
+                self.expected_rotation[motor] = raw_rotation
 
-                # 理论角度计算
                 if self.running_mode == "auto":
-                    # 初始基准尚未设置时（第一条指令且未读取到角度）
                     if self.initial_angle_base[motor] is None:
-                        # 使用当前角度作为基准（可能为0，后续收到反馈会更新）
                         base = self.current_angles.get(motor, 0.0)
                         self.initial_angle_base[motor] = base
 
-                    # 累积原始转动量（未校准的）
                     raw_rotation_signed = float(raw_angle) * dir_factor
                     self.accumulated_rotation[motor] += raw_rotation_signed
 
-                    # 校准补偿
                     if self.auto_calibration_enabled:
                         compensation = (self.theoretical_deviations.get(motor) or 0.0) * self.calibration_amplitude
                         calibrated_rotation = raw_rotation_signed - compensation
                     else:
                         calibrated_rotation = raw_rotation_signed
 
-                    # 实际发送的转动量
                     actual_rotation = abs(calibrated_rotation)
-
-                    # 更新期望角度
                     self.expected_angles[motor] = (
-                            (self.initial_angle_base[motor] +
-                             self.accumulated_rotation[motor]) % 360)
+                            (self.initial_angle_base[motor] + self.accumulated_rotation[motor]) % 360)
 
                 else:  # 手动模式
                     actual_rotation = float(raw_angle)
                     current = self.current_angles.get(motor, 0.0)
                     self.pending_targets[motor] = (current + actual_rotation * dir_factor) % 360
 
-                # 构造指令
+                # 将当前启用电机的指令拼接到总指令字符串中
                 command += f"{motor}E{direction}V{speed}J{actual_rotation:.3f}"
 
             except (ValueError, TypeError):
-                self.log(f"电机{motor}参数错误: 速度='{speed}', 角度='{raw_angle}'")
-                command += f"{motor}DFV0J0"
+                self.log(f"电机{motor}参数错误，已跳过: 速度='{speed}', 角度='{raw_angle}'")
+                # 如果参数解析错误，则记录日志并跳过此电机，不影响其他电机
+                continue
 
+        # 更新活动电机状态，并附加结束符
+        self.active_motors = command_active_motors
         self.is_first_command = False
-        return command + "\r\n"
+
+        # 只有在至少一个电机被启用时才添加回车换行符
+        if command:
+            return command + "\r\n"
+        return ""  # 如果没有启用的电机，则返回空字符串，不发送任何指令
 
     def get_available_ports(self):
         # 固定添加COM1和COM2
@@ -3088,7 +2193,13 @@ class MotorControlApp(QMainWindow):
                 self.initial_angle_base[motor] = self.current_angles.get(motor)
                 self.accumulated_rotation[motor] = 0.0
 
-            self.automation_thread = AutomationThread(self, self.automation_steps, self.loop_count, self.serial_port)
+            self.automation_thread = AutomationThread(
+                weakref.ref(self),
+                self.automation_steps,
+                self.loop_count,
+                self.serial_port,
+                self.serial_lock
+            )
             self.automation_thread.update_status.connect(self.status_bar.showMessage)
             self.automation_thread.error_occurred.connect(self.handle_automation_error)
             self.automation_thread.finished.connect(self._on_automation_finished)
@@ -3154,7 +2265,7 @@ class MotorControlApp(QMainWindow):
                 "continuous": widgets["continuous"].isChecked()
             }
         self.presets[f"manual_{preset_name}"] = manual_params
-        PresetManager.save_presets(self.presets)
+        self._preset_manager.save_all()
         self.update_preset_combos()
         self.log(f"手动预设 '{preset_name}' 已保存")
 
@@ -3184,7 +2295,7 @@ class MotorControlApp(QMainWindow):
             "loop_count": self.loop_entry.text()
         }
         self.presets[f"auto_{preset_name}"] = preset_data
-        PresetManager.save_presets(self.presets)
+        self._preset_manager.save_all()
         self.update_preset_combos()
         self.log(f"自动预设 '{preset_name}' 已保存")
 
@@ -3197,6 +2308,100 @@ class MotorControlApp(QMainWindow):
             self.loop_entry.setText(str(preset_data.get("loop_count", 1)))
             self.update_steps_table()
             self.log(f"已加载自动预设 '{preset_name}'")
+
+    # =================================================================
+    # --- 新增功能：自动保存与加载设置 ---
+    # =================================================================
+    def save_settings(self):
+        """将当前UI设置保存到JSON文件。"""
+        settings = {
+            "serial": {
+                "port": self.port_combo.currentText(),
+                "baudrate": self.baud_combo.currentText()
+            },
+            "window": {
+                "width": self.size().width(),
+                "height": self.size().height()
+            },
+            "calibration": {
+                "enabled": self.auto_cal_switch.isChecked(),
+                "amplitude": self.calibration_amp_input.text()
+            }
+        }
+        # 仅当光谱仪库可用时才保存相关设置
+        if NIDAQMX_AVAILABLE:
+            settings["spectrometer"] = {
+                "device": self.spectro_device_combo.currentText(),
+                "channel": self.spectro_channel_combo.currentText(),
+                "rate": self.spectro_rate_spin.value()
+            }
+
+        try:
+            with open(self.settings_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+            self.log("设置已成功保存。")
+        except Exception as e:
+            self.log(f"保存设置时出错: {str(e)}")
+
+    def load_settings(self):
+        """从JSON文件加载UI设置。"""
+        if not os.path.exists(self.settings_file):
+            self.log("未找到设置文件，使用默认值。")
+            return
+
+        try:
+            with open(self.settings_file, 'r') as f:
+                settings = json.load(f)
+
+            # 加载串口设置
+            serial_settings = settings.get("serial", {})
+            if "port" in serial_settings:
+                saved_port = serial_settings["port"]
+                available_ports = [self.port_combo.itemText(i) for i in range(self.port_combo.count())]
+                if saved_port in available_ports:
+                    self.port_combo.setCurrentText(saved_port)
+                elif available_ports:
+                    self.port_combo.setCurrentIndex(0)  # 智能选择第一个
+            if "baudrate" in serial_settings:
+                self.baud_combo.setCurrentText(serial_settings["baudrate"])
+
+            # 加载窗口尺寸
+            window_settings = settings.get("window", {})
+            if "width" in window_settings and "height" in window_settings:
+                self.resize(window_settings["width"], window_settings["height"])
+
+            # 加载自动校准设置
+            cal_settings = settings.get("calibration", {})
+            if "enabled" in cal_settings:
+                self.auto_cal_switch.setChecked(cal_settings["enabled"])
+            if "amplitude" in cal_settings:
+                self.calibration_amp_input.setText(cal_settings["amplitude"])
+
+            # 加载光谱仪设置
+            if NIDAQMX_AVAILABLE:
+                spectro_settings = settings.get("spectrometer", {})
+                if "device" in spectro_settings:
+                    saved_device = spectro_settings["device"]
+                    available_devices = [self.spectro_device_combo.itemText(i) for i in
+                                         range(self.spectro_device_combo.count())]
+                    if saved_device in available_devices:
+                        self.spectro_device_combo.setCurrentText(saved_device)
+
+                QApplication.processEvents()  # 等待UI响应设备更改，以便通道列表刷新
+
+                if "channel" in spectro_settings:
+                    saved_channel = spectro_settings["channel"]
+                    available_channels = [self.spectro_channel_combo.itemText(i) for i in
+                                          range(self.spectro_channel_combo.count())]
+                    if saved_channel in available_channels:
+                        self.spectro_channel_combo.setCurrentText(saved_channel)
+
+                if "rate" in spectro_settings:
+                    self.spectro_rate_spin.setValue(spectro_settings["rate"])
+
+            self.log("设置已成功加载。")
+        except Exception as e:
+            self.log(f"加载设置时出错: {str(e)}。将使用默认值。")
 
     def update_preset_combos(self):
         manual_presets = [k[7:] for k in self.presets if k.startswith("manual_")]
@@ -3219,6 +2424,9 @@ class MotorControlApp(QMainWindow):
         self.log_text.clear()
 
     def closeEvent(self, event):
+        # --- 新增：保存设置 ---
+        self.save_settings()
+
         # 统一的关闭清理
         self.stop_automation()
         if NIDAQMX_AVAILABLE:
@@ -3231,17 +2439,3 @@ class MotorControlApp(QMainWindow):
         event.accept()
 
 
-if __name__ == "__main__":
-    if os.name == 'nt':
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
-    app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(':/meow.ico'))
-    app.setStyleSheet(MACOS_STYLE)
-
-    window = MotorControlApp()
-    window.show()
-
-    sys.exit(app.exec())
