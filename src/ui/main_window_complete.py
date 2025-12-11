@@ -49,7 +49,8 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QStatusBar, QInputDialog, QMessageBox, QRadioButton,
     QButtonGroup, QCheckBox, QTabWidget, QGroupBox, QSizePolicy, 
     QHeaderView, QTableWidget, QTableWidgetItem, QFormLayout,
-    QFileDialog, QSplitter, QSpinBox, QDoubleSpinBox, QScrollArea, QTreeWidget
+    QFileDialog, QSplitter, QSpinBox, QDoubleSpinBox, QScrollArea, QTreeWidget,
+    QMenu
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QMargins
 from PySide6.QtGui import QFont, QTextCursor, QIcon, QColor, QPainter, QPen, QBrush, QDoubleValidator
@@ -57,11 +58,14 @@ from PySide6.QtCharts import QChartView
 
 # 导入重构后的组件
 from src.config.constants import MACOS_STYLE
-from src.ui.widgets import IOSSwitch, MotorCircle, AnalysisChart, DragDropTreeWidget
+from src.config.settings import SettingsManager
+from src.ui.widgets import IOSSwitch, MotorCircle, AnalysisChart, DragDropTreeWidget, PIDAnalysisChart, PIDStatsPanel, PIDOptimizerPanel
 from src.ui.dialogs.motor_step_config import MotorStepConfig
 from src.hardware.daq_thread import DAQThread
 from src.hardware.serial_reader import SerialReader
 from src.core.automation_engine import AutomationThread
+from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
+from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
 
 class MotorControlApp(QMainWindow):
     log_signal = Signal(str)
@@ -72,6 +76,10 @@ class MotorControlApp(QMainWindow):
 
         # --- 新增：设置文件路径 ---
         self.settings_file = "data/settings.json"
+        
+        # --- 初始化设置管理器 ---
+        self.settings_manager = SettingsManager(self.settings_file)
+        self.settings_manager.load()
 
         # --- 初始化光谱仪相关变量 ---
         if not NIDAQMX_AVAILABLE:
@@ -81,7 +89,7 @@ class MotorControlApp(QMainWindow):
         self._spectro_init_vars()
 
         # --- 原有初始化 ---
-        self.angle_update.connect(lambda x: print(f"Signal received: {x}"))
+        # 保留日志信号连接（角度更新信号不打印，避免刷屏）
         self.log_signal.connect(lambda x: print(f"Log: {x}"))
         self.resize_timer = QTimer()
         self.resize_timer.setSingleShot(True)
@@ -111,6 +119,8 @@ class MotorControlApp(QMainWindow):
         self.expected_changes = {}  # 记录每个电机理论转动角度
         self.last_angles = {}  # 记录上一次接收到的角度
         self.current_angles = {"X": 0, "Y": 0, "Z": 0, "A": 0}  # 添加当前角度记录
+        self.angle_offsets = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}  # 零点偏移量
+        self.raw_angles = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}  # 原始物理角度
         self.pending_targets = {}
         self.expected_changes = {}  # 保持理论变化量
         self.realtime_deviation_history = {m: deque(maxlen=1000) for m in ["X", "Y", "Z", "A"]}
@@ -126,7 +136,22 @@ class MotorControlApp(QMainWindow):
         self.theoretical_target = {m: None for m in ["X", "Y", "Z", "A"]}  # 理论目标角度
         self.is_first_command = True  # 是否是第一条指令
         self.running_mode = "manual"
-        self.calibration_amplitude = 1.0
+        self.calibration_amplitude = 0.5  # 保留兼容性
+        self.pid_precision = 0.5  # PID 精确控制目标阈值（度）
+        self.calibration_in_progress = False  # PID 校准进行中标志
+        
+        # --- 新增：PID 分析器 ---
+        self.pid_analyzer = PIDAnalyzer(max_history=100)
+        self.pid_update_timer = QTimer()
+        self.pid_update_timer.timeout.connect(self._update_pid_analysis_display)
+        self.pid_update_timer.setInterval(200)  # 200ms 更新一次显示
+        
+        # --- 新增：关闭标志和数据包缓冲 ---
+        self._closing = False  # 关闭标志，防止信号处理
+        self._pending_pid_packets = []  # PID数据包缓冲
+        self._chart_update_timer = QTimer()
+        self._chart_update_timer.timeout.connect(self._batch_update_charts)
+        self._chart_update_timer.setInterval(50)  # 20Hz 批量更新图表
 
         # --- 新增：加载设置 ---
         self.load_settings()
@@ -150,7 +175,7 @@ class MotorControlApp(QMainWindow):
         self.nav_layout.setSpacing(8)
 
         # ================= 控制模式 =================
-        control_group = QGroupBox("电机控制模式")
+        control_group = QGroupBox("泵送控制")
         control_group.setFont(QFont("Microsoft YaHei", 13))
         control_layout = QVBoxLayout(control_group)
 
@@ -167,14 +192,14 @@ class MotorControlApp(QMainWindow):
 
         self.nav_layout.addWidget(control_group)
 
-        # ================= 电机状态 =================
-        self.motor_status_group = QGroupBox("电机状态与分析")
+        # ================= 微泵状态 =================
+        self.motor_status_group = QGroupBox("泵体状态")
         self.motor_status_group.setFont(QFont("Microsoft YaHei", 13))
         motor_status_layout = QVBoxLayout(self.motor_status_group)
 
-        self.position_btn = QPushButton("位置数据")
+        self.position_btn = QPushButton("转子监控")
         self.position_btn.setCheckable(True)
-        self.analysis_btn = QPushButton("数据分析")
+        self.analysis_btn = QPushButton("运行分析")
         self.analysis_btn.setCheckable(True)
 
         for btn in [self.position_btn, self.analysis_btn]:
@@ -613,65 +638,94 @@ class MotorControlApp(QMainWindow):
     # --- 以下是原有 main.py 的方法 ---
 
     def add_auto_calibration_switch(self):
-        """在左侧导航栏添加自动校准开关和幅值输入"""
-        auto_cal_group = QGroupBox("自动校准")
+        """在左侧导航栏添加 PID 精确控制开关和目标阈值输入"""
+        auto_cal_group = QGroupBox("PID精确控制")
         auto_cal_group.setFont(QFont("Microsoft YaHei", 13))
         auto_cal_layout = QVBoxLayout(auto_cal_group)
         # 开关布局
         switch_frame = QFrame()
         hbox = QHBoxLayout(switch_frame)
-        auto_cal_label = QLabel("校准开关:")
+        auto_cal_label = QLabel("PID模式:")
         self.auto_cal_switch = IOSSwitch()
         hbox.addWidget(auto_cal_label)
         hbox.addWidget(self.auto_cal_switch)
         auto_cal_layout.addWidget(switch_frame)
-        # 校准幅值输入框
+        # 目标阈值输入框（原校准幅值）
         amplitude_frame = QFrame()
         hbox_amp = QHBoxLayout(amplitude_frame)
-        amp_label = QLabel("校准幅值：")
+        amp_label = QLabel("目标阈值：")
         self.calibration_amp_input = QLineEdit()
         self.calibration_amp_input.setFixedWidth(80)
-        self.calibration_amp_input.setText("1.0")
-        self.calibration_amp_input.setValidator(QDoubleValidator(0.0, 2.0, 2))  # 限制输入范围0-2，两位小数
+        self.calibration_amp_input.setText("0.5")
+        self.calibration_amp_input.setValidator(QDoubleValidator(0.05, 2.0, 2))  # 限制输入范围0.1-5度
+        # 添加单位标签
+        unit_label = QLabel("°")
         hbox_amp.addWidget(amp_label)
         hbox_amp.addWidget(self.calibration_amp_input)
+        hbox_amp.addWidget(unit_label)
         auto_cal_layout.addWidget(amplitude_frame)
-        # 初始状态设置
-        self.calibration_amp_input.setEnabled(False)  # 默认禁用
         # 信号连接
         self.auto_cal_switch.stateChanged.connect(self.toggle_auto_calibration)
-        self.calibration_amp_input.textChanged.connect(self.update_calibration_amplitude)
+        self.calibration_amp_input.textChanged.connect(self.update_pid_precision)
         self.nav_layout.insertWidget(3, auto_cal_group)
 
-    def update_calibration_amplitude(self):
-        """更新校准幅值"""
+    def update_pid_precision(self):
+        """更新 PID 目标阈值（精度）"""
         try:
-            self.calibration_amplitude = float(self.calibration_amp_input.text())
+            value = float(self.calibration_amp_input.text())
+            if 0.05 <= value <= 2.0:
+                self.pid_precision = value
+                self.calibration_amplitude = value  # 保持兼容性
+            else:
+                raise ValueError("超出范围")
         except ValueError:
-            self.log("校准幅值无效，已重置为1.0")
-            self.calibration_amp_input.setText("1.0")
-            self.calibration_amplitude = 1.0
+            self.log("目标阈值无效，已重置为0.5°")
+            self.calibration_amp_input.setText("0.5")
+            self.pid_precision = 0.5
+            self.calibration_amplitude = 0.5
 
     def toggle_auto_calibration(self, state):
         self.auto_calibration_enabled = state
-        self.calibration_amp_input.setEnabled(state)
-        status = "启用" if state else "停用"
-        self.log(f"自动校准已{status}")
+        mode = "PID精确控制" if state else "传统开环"
+        self.log(f"已切换至{mode}模式")
 
     def init_position_tab(self):
         layout = QVBoxLayout(self.position_tab)
 
-        # 电机状态展示区
+        # 电机状态展示区 - 使用2x2网格布局
         motor_frame = QFrame()
-        motor_layout = QHBoxLayout(motor_frame)
+        motor_layout = QGridLayout(motor_frame)
+        motor_layout.setSpacing(10)
         self.motors = {}
         self.angle_labels = {}
         self.calibration_switches = {}  # 新增校准开关字典
 
+        # 初始化零点标定UI字典
+        self.zero_buttons = {}
+        self.offset_labels = {}
+        
+        # 存储位置监控页的GroupBox引用，用于刷新标题
+        self.position_motor_groups = {}
+        
+        # 2x2网格位置映射
+        grid_positions = {'X': (0, 0), 'Y': (0, 1), 'Z': (1, 0), 'A': (1, 1)}
+        
         for motor in ["X", "Y", "Z", "A"]:
-            group = QGroupBox(f"电机 {motor}")
+            # 获取备注并生成标题
+            note = self.settings_manager.get_pump_note(motor)
+            title = f"微泵 {motor} ({note})" if note else f"微泵 {motor}"
+            group = QGroupBox(title)
+            self.position_motor_groups[motor] = group
+            
+            # 启用右键菜单
+            group.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            group.customContextMenuRequested.connect(
+                lambda pos, m=motor, g=group: self.show_pump_note_menu(m, pos, g)
+            )
+            
             vbox = QVBoxLayout(group)
             vbox.setAlignment(Qt.AlignCenter)
+            vbox.setSpacing(5)
 
             # 动画组件
             circle = MotorCircle()
@@ -682,11 +736,24 @@ class MotorControlApp(QMainWindow):
             label.setStyleSheet("font-size: 24px; color: #007AFF;")
             self.angle_labels[motor] = label
 
-            # 校准开关
+            # 零点标定按钮
+            zero_btn = QPushButton("设为零点")
+            zero_btn.setFont(QFont("Microsoft YaHei", 10))
+            zero_btn.setStyleSheet("font-size: 12px; padding: 4px;")
+            zero_btn.clicked.connect(lambda checked, m=motor: self.set_current_as_zero(m))
+            self.zero_buttons[motor] = zero_btn
+            
+            # 偏移量显示
+            offset_label = QLabel("偏移: 0.0°")
+            offset_label.setAlignment(Qt.AlignCenter)
+            offset_label.setStyleSheet("color: #8e8e93; font-size: 11px;")
+            self.offset_labels[motor] = offset_label
+
+            # 复位开关
             switch_frame = QFrame()
             hbox = QHBoxLayout(switch_frame)
             hbox.setContentsMargins(0, 0, 0, 0)
-            switch_label = QLabel("校准开关:")
+            switch_label = QLabel("复位开关:")
             switch = IOSSwitch()
             self.calibration_switches[motor] = switch
             hbox.addWidget(switch_label)
@@ -694,233 +761,487 @@ class MotorControlApp(QMainWindow):
 
             vbox.addWidget(circle, alignment=Qt.AlignCenter)
             vbox.addWidget(label)
+            vbox.addWidget(zero_btn)
+            vbox.addWidget(offset_label)
             vbox.addWidget(switch_frame)
-            motor_layout.addWidget(group)
+            
+            # 使用2x2网格布局
+            row, col = grid_positions[motor]
+            motor_layout.addWidget(group, row, col)
 
         layout.addWidget(motor_frame)
 
-        # 实时角度表格
-        self.angle_table = QTableWidget()
-        self.angle_table.setRowCount(4)
-        self.angle_table.setColumnCount(5)
-        self.angle_table.setHorizontalHeaderLabels([
-            "电机",
-            "当前角度",
-            "目标角度",
-            "理论偏差",
-            "实时偏差"
-        ])
-        # 设置表格样式
-        self.angle_table.verticalHeader().setVisible(False)  # 隐藏垂直表头
-        self.angle_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # 自动拉伸列宽
-        self.angle_table.setAlternatingRowColors(True)  # 交替行颜色
-        # 设置表头居中
-        header = self.angle_table.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignCenter)
-        header.setStyleSheet("""
-                QHeaderView::section {
-                    font-size: 18px;
-                    padding: 5px;
-                    background-color: #f0f0f0;
-                }
-            """)
-
-        # 设置表格内容全局居中
-        self.angle_table.setStyleSheet("""
-                QTableWidget {
-                    font-size: 18px;
-                }
-                QTableWidget QTableCornerButton::section {
-                    background-color: #f0f0f0;
-                }
-                QTableWidget::item {
-                    text-align: center;
-                }
-            """)
-
-        # 新增初始化按钮
+        # 控制按钮区域
         btn_frame = QFrame()
         hbox = QHBoxLayout(btn_frame)
-        self.init_btn = QPushButton("电机初始化")
+        self.init_btn = QPushButton("微泵复位")
         self.init_btn.clicked.connect(self.start_calibration)
-        self.get_angle_btn = QPushButton("获取当前角度")
-        self.get_angle_btn.clicked.connect(self.request_angles)
 
-        for btn in [self.init_btn, self.get_angle_btn]:
-            btn.setStyleSheet("font-size: 18px; padding: 8px;")
+        # 实时角度按钮
+        self.stream_btn = QPushButton("实时角度")
+        self.stream_btn.setCheckable(True)
+        self.stream_btn.clicked.connect(self.toggle_streaming)
+        
+        # 重置零点按钮
+        self.reset_zero_btn = QPushButton("重置零点")
+        self.reset_zero_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                padding: 8px;
+                background-color: #ff3b30;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #e02d24;
+            }
+        """)
+        self.reset_zero_btn.clicked.connect(self.reset_zero_offsets)
+        
+        # 重置偏差按钮
+        self.reset_deviation_btn = QPushButton("重置偏差")
+        self.reset_deviation_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                padding: 8px;
+                background-color: #ff9500;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #e08600;
+            }
+        """)
+        self.reset_deviation_btn.clicked.connect(self.reset_deviation_data)
+
+        for btn in [self.init_btn, self.stream_btn, self.reset_zero_btn, self.reset_deviation_btn]:
+            if btn not in [self.reset_zero_btn, self.reset_deviation_btn]:  # 这两个按钮已有样式
+                btn.setStyleSheet("font-size: 18px; padding: 8px;")
             hbox.addWidget(btn)
 
-        layout.addWidget(QLabel("实时角度数据:"))
-        layout.addWidget(self.angle_table)
         layout.addWidget(btn_frame)
 
     def start_calibration(self):
-        """开始初始化流程"""
+        """开始 PID 闭环校准流程（下位机自主完成）"""
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.warning(self, "警告", "请先连接串口")
             return
 
-        self.calibration_attempts = 0
-        self.last_calibration_angles = {m: [] for m in ["X", "Y", "Z", "A"]}
-        self.send_calibration_command()
-
-    def send_calibration_command(self):
-        # 优化点 1: 使用列表只存储需要校准的电机指令
-        active_commands = []
+        # 收集需要校准的电机
+        motors_to_cal = ""
         for motor in ["X", "Y", "Z", "A"]:
-            # 优化点 2: 只处理被选中的电机
             if self.calibration_switches[motor].isChecked():
-                current_angle = (self.current_angles.get(motor, 0.0) or 0.0) % 360
+                motors_to_cal += motor
 
-                # 计算最短路径以归零
-                if current_angle > 180:
-                    target_angle = 360 - current_angle
-                    direction = "EF"  # 正向转动
-                else:
-                    target_angle = current_angle
-                    direction = "EB"  # 反向转动
-
-                # 生成校准指令（固定速度5RPM，三位小数精度）
-                command_part = f"{motor}{direction}V5J{target_angle:.3f}"
-                active_commands.append(command_part)
-
-        # 优化点 3: 检查是否有任何指令生成，避免发送空指令
-        if not active_commands:
+        if not motors_to_cal:
             QMessageBox.warning(self, "提示", "请至少选择一个需要校准的电机。")
             return
 
-        # 优化点 4: 仅拼接有效指令
-        full_command = "".join(active_commands) + "\r\n"
+        # 发送 PID 校准指令（下位机自主完成闭环控制）
+        command = f"CAL{motors_to_cal}\r\n"
+        if self.send_command(command):
+            self.calibration_in_progress = True
+            self.log(f"开始 PID 校准: {motors_to_cal}")
+            self.status_bar.showMessage(f"正在校准 {motors_to_cal}...")
 
-        if self.send_command(full_command):
-            # 发送校准命令后等待10秒再读取角度
-            QTimer.singleShot(10000, self.send_angle_request)
+    def stop_calibration(self):
+        """停止校准"""
+        if self.send_command("CALSTOP\r\n"):
+            self.calibration_in_progress = False
+            self.log("校准已停止")
+            self.status_bar.showMessage("校准已停止")
+
+    def handle_calibration_message(self, data):
+        """处理下位机校准状态消息"""
+        if data.startswith("CAL_START"):
+            self.log(f"校准开始: {data}")
+            self.calibration_in_progress = True
+            
+        elif data.startswith("CAL_DONE:"):
+            # 单个电机完成，如 CAL_DONE:X=0.32
+            motor_info = data.replace("CAL_DONE:", "")
+            self.log(f"电机校准完成: {motor_info}")
+            
+        elif data.startswith("CAL_COMPLETE"):
+            # 全部完成
+            self.calibration_in_progress = False
+            self.log("所有电机校准完成")
+            self.clear_chart()
+            self.status_bar.showMessage("校准完成")
+            QMessageBox.information(self, "完成", "电机 PID 校准完成")
+            
+        elif data.startswith("CAL_FAIL"):
+            # 校准失败
+            self.calibration_in_progress = False
+            error_info = data.replace("CAL_FAIL:", "")
+            self.log(f"校准失败: {error_info}")
+            self.status_bar.showMessage("校准失败")
+            QMessageBox.warning(self, "错误", f"校准失败: {error_info}")
+            
+        elif data.startswith("CAL_STATUS"):
+            # 校准进度状态
+            status_info = data.replace("CAL_STATUS:", "")
+            self.log(f"校准状态: {status_info}")
+            
+        elif data.startswith("CAL_STOPPED"):
+            self.calibration_in_progress = False
+            self.log("校准已停止")
+            
+        elif data.startswith("CAL_ERR"):
+            self.log(f"校准错误: {data}")
+
+    def handle_pid_message(self, data):
+        """处理 PID 定位模式文本消息（开始/完成/超时/失败）"""
+        if data.startswith("PID_START"):
+            # PID 定位开始，如 PID_START:X,target=90.0,prec=0.50
+            info = data.replace("PID_START:", "")
+            self.log(f"PID定位开始: {info}")
+            
+            try:
+                parts = info.split(",")
+                motor = parts[0].strip()
+                target = float(parts[1].split("=")[1])
+                precision = float(parts[2].split("=")[1]) if len(parts) > 2 else self.pid_precision
+                
+                self.pid_analyzer.start_pid_move(motor, target, precision)
+                # 清空该电机的图表数据（只显示最新一次运行）
+                self.pid_analysis_chart.clear_motor(motor)
+                self.pid_stats_panel.update_status(motor, "运行中", "#2ca02c")
+                self.pid_stats_panel.update_target(motor, target)
+                
+                if not self.pid_update_timer.isActive():
+                    self.pid_update_timer.start()
+            except Exception as e:
+                self.log(f"解析 PID_START 失败: {e}")
+            
+        elif data.startswith("PID_DONE"):
+            # PID 定位完成，如 PID_DONE:X,angle=89.80,err=0.20
+            info = data.replace("PID_DONE:", "")
+            self.log(f"PID定位完成: {info}")
+            self.status_bar.showMessage(f"定位完成: {info}")
+            
+            try:
+                parts = info.split(",")
+                motor = parts[0].strip()
+                final_angle = float(parts[1].split("=")[1])
+                final_error = float(parts[2].split("=")[1])
+                
+                self.pid_analyzer.finish_pid_move(motor, PIDStatus.DONE, final_angle, final_error)
+                self.pid_stats_panel.update_status(motor, "已完成", "#1f77b4")
+                self.pid_stats_panel.update_error(motor, final_error)
+                self._update_pid_history_stats()
+                
+                # 通知自动化线程 PID 完成
+                self._notify_automation_pid_complete(motor)
+                
+                if not self.pid_analyzer.get_active_motors():
+                    self.pid_update_timer.stop()
+            except Exception as e:
+                self.log(f"解析 PID_DONE 失败: {e}")
+            
+        elif data.startswith("PID_TIMEOUT"):
+            info = data.replace("PID_TIMEOUT:", "")
+            self.log(f"PID定位超时: {info}")
+            self.status_bar.showMessage(f"定位超时: {info}")
+            
+            try:
+                parts = info.split(",")
+                motor = parts[0].strip()
+                final_angle = float(parts[1].split("=")[1])
+                final_error = float(parts[2].split("=")[1])
+                
+                self.pid_analyzer.finish_pid_move(motor, PIDStatus.TIMEOUT, final_angle, final_error)
+                self.pid_stats_panel.update_status(motor, "超时", "#ff7f0e")
+                self._update_pid_history_stats()
+                
+                # 通知自动化线程 PID 完成（超时也算完成）
+                self._notify_automation_pid_complete(motor)
+                
+                if not self.pid_analyzer.get_active_motors():
+                    self.pid_update_timer.stop()
+            except Exception as e:
+                self.log(f"解析 PID_TIMEOUT 失败: {e}")
+            
+        elif data.startswith("PID_FAIL"):
+            info = data.replace("PID_FAIL:", "")
+            self.log(f"PID定位失败: {info}")
+            self.status_bar.showMessage(f"定位失败: {info}")
+            
+            try:
+                parts = info.split("=")
+                motor = parts[0].strip()
+                self.pid_analyzer.finish_pid_move(motor, PIDStatus.FAILED, 0, 0)
+                self.pid_stats_panel.update_status(motor, "失败", "#d62728")
+                self._update_pid_history_stats()
+                
+                # 通知自动化线程 PID 完成（失败也算完成）
+                self._notify_automation_pid_complete(motor)
+                
+                if not self.pid_analyzer.get_active_motors():
+                    self.pid_update_timer.stop()
+            except Exception as e:
+                self.log(f"解析 PID_FAIL 失败: {e}")
+            
+        elif data.startswith("PID_STOP"):
+            self.log("PID定位已停止")
+            self.pid_analyzer.stop_all()
+    
+    def _notify_automation_pid_complete(self, motor: str) -> None:
+        """
+        通知自动化线程 PID 完成
+        
+        Args:
+            motor: 完成的电机名称
+        """
+        try:
+            if self.automation_thread and self.automation_thread.isRunning():
+                self.automation_thread.notify_pid_complete(motor)
+        except Exception:
+            pass  # 忽略通知失败
+    
+    def handle_pid_packet(self, packet: dict):
+        """处理 PID 二进制数据包 - 缓冲模式，由定时器批量更新图表"""
+        try:
+            # 检查关闭标志
+            if getattr(self, '_closing', False):
+                return
+            
+            # 检查是否已停止运行
+            if not hasattr(self, 'pid_analyzer') or self.pid_analyzer is None:
+                return
+            
+            motor = packet.get('motor', 'X')
+            
+            # 更新分析器（返回是否是新记录）
+            is_new_record = self.pid_analyzer.update_from_packet(packet)
+            
+            # 如果是新记录，清空该电机的图表数据
+            if is_new_record:
+                if hasattr(self, 'pid_analysis_chart') and self.pid_analysis_chart is not None:
+                    self.pid_analysis_chart.clear_motor(motor)
+            
+            # 计算相对时间
+            if motor in self.pid_analyzer.active_records:
+                record = self.pid_analyzer.active_records[motor]
+                relative_time = time.time() - record.start_time
+            else:
+                relative_time = 0
+            
+            # 将数据包加入缓冲区，由定时器批量更新（限制缓冲区大小防止内存泄漏）
+            if hasattr(self, '_pending_pid_packets'):
+                # 限制缓冲区最大1000个数据包，超过则丢弃旧数据
+                if len(self._pending_pid_packets) > 1000:
+                    self._pending_pid_packets = self._pending_pid_packets[-500:]
+                self._pending_pid_packets.append((motor, packet, relative_time))
+            
+            # 更新状态面板（轻量操作，可以实时更新）
+            if hasattr(self, 'pid_stats_panel') and self.pid_stats_panel is not None:
+                self.pid_stats_panel.update_from_packet(motor, packet)
+        except RuntimeError as e:
+            # Qt 对象已删除
+            if "deleted" in str(e).lower() or "C++ object" in str(e):
+                return
+            print(f"handle_pid_packet error: {e}")
+        except Exception as e:
+            print(f"handle_pid_packet error: {e}")
+    
+    def _batch_update_charts(self):
+        """批量更新图表 - 由定时器调用，降低UI刷新频率"""
+        try:
+            # 检查关闭标志
+            if getattr(self, '_closing', False):
+                return
+            
+            if not hasattr(self, '_pending_pid_packets') or not self._pending_pid_packets:
+                return
+            
+            # 获取所有待处理的数据包（限制单次处理数量）
+            packets = self._pending_pid_packets[:100]  # 每次最多处理100个
+            del self._pending_pid_packets[:len(packets)]
+            
+            if not packets:
+                return
+            
+            # 再次检查关闭标志
+            if getattr(self, '_closing', False):
+                return
+            
+            # 批量添加数据到图表（不刷新）
+            if hasattr(self, 'pid_analysis_chart') and self.pid_analysis_chart is not None:
+                for motor, packet, relative_time in packets:
+                    if getattr(self, '_closing', False):
+                        return
+                    self.pid_analysis_chart.add_data_only(motor, packet, relative_time)
+                
+                # 一次性刷新所有曲线
+                if not getattr(self, '_closing', False):
+                    self.pid_analysis_chart.refresh_all_curves()
+        except RuntimeError as e:
+            if "deleted" in str(e).lower() or "C++ object" in str(e):
+                return
+        except Exception as e:
+            print(f"_batch_update_charts error: {e}")
+
+    def handle_test_result_packet(self, result: dict):
+        """
+        处理 PID 测试结果二进制数据包 (0xBB)
+        
+        Args:
+            result: 包含测试结果的字典
+        """
+        try:
+            if getattr(self, '_closing', False):
+                return
+            
+            # 构造 TestResult 对象
+            from src.core.pid_optimizer import TestResult
+            test_result = TestResult(
+                motor_id=result.get('motor_id', 0),
+                run_index=result.get('run_index', 0),
+                total_runs=result.get('total_runs', 0),
+                convergence_time_ms=result.get('convergence_time_ms', 0),
+                max_overshoot=result.get('max_overshoot', 0.0),
+                final_error=result.get('final_error', 0.0),
+                oscillation_count=result.get('oscillation_count', 0),
+                smoothness_score=result.get('smoothness_score', 0),
+                startup_jerk=result.get('startup_jerk', 0.0),
+                total_score=result.get('total_score', 0),
+            )
+            
+            # 传递给优化器
+            if hasattr(self, 'pid_optimizer') and self.pid_optimizer:
+                self.pid_optimizer.on_test_result(test_result)
+            
+            # 传递给单次测试
+            if getattr(self, '_single_test_active', False):
+                if not hasattr(self, '_single_test_results'):
+                    self._single_test_results = []
+                self._single_test_results.append(test_result)
+            
+            # 记录日志
+            motor_names = ['X', 'Y', 'Z', 'A']
+            motor = motor_names[result.get('motor_id', 0)]
+            self.log(f"[测试结果] {motor} 轮次{result.get('run_index', 0)}: "
+                     f"得分={result.get('total_score', 0)}, "
+                     f"收敛={result.get('convergence_time_ms', 0)}ms")
+        except Exception as e:
+            print(f"handle_test_result_packet error: {e}")
+    
+    def handle_angle_packet(self, angles: dict):
+        """
+        处理角度二进制数据包 (0xCC)
+        
+        Args:
+            angles: 包含四个电机角度的字典 {'X': float, 'Y': float, 'Z': float, 'A': float}
+        """
+        try:
+            if getattr(self, '_closing', False):
+                return
+            
+            # 应用零点偏移并计算相对角度
+            current_angles = {}
+            for motor in ['X', 'Y', 'Z', 'A']:
+                raw_angle = angles.get(motor, 0.0) % 360
+                # 保存原始物理角度
+                self.raw_angles[motor] = raw_angle
+                # 应用偏移量计算相对角度
+                offset = self.angle_offsets.get(motor, 0.0)
+                relative_angle = (raw_angle - offset) % 360
+                current_angles[motor] = relative_angle
+            
+            # 计算两种偏差
+            theoretical_deviations = {}
+            theoretical_targets = {}
+            realtime_deviations = {}
+            
+            for motor in ['X', 'Y', 'Z', 'A']:
+                # 仅处理启用电机
+                if motor not in self.active_motors:
+                    theoretical_deviations[motor] = None
+                    realtime_deviations[motor] = None
+                    theoretical_targets[motor] = None
+                    continue
+                
+                current = current_angles.get(motor, 0.0)
+                
+                # 实时偏差计算
+                if motor in self.pending_targets and self.pending_targets[motor] is not None:
+                    realtime_dev = (current - self.pending_targets[motor]) % 360
+                    realtime_dev = realtime_dev - 360 if realtime_dev > 180 else realtime_dev
+                    realtime_deviations[motor] = realtime_dev
+                else:
+                    realtime_deviations[motor] = None
+                
+                # 理论偏差计算
+                if self.initial_angle_base.get(motor) is not None:
+                    theoretical_target = (self.initial_angle_base[motor] +
+                                          self.accumulated_rotation[motor]) % 360
+                    theoretical_targets[motor] = theoretical_target
+                    theoretical_dev = (current - theoretical_target) % 360
+                    if theoretical_dev > 180:
+                        theoretical_dev -= 360
+                    theoretical_deviations[motor] = theoretical_dev
+                else:
+                    theoretical_deviations[motor] = None
+                    theoretical_targets[motor] = None
+            
+            # 自动校准处理（仅自动模式）
+            if self.running_mode == "auto" and self.auto_calibration_enabled:
+                for motor in self.active_motors:
+                    if theoretical_deviations[motor] is not None:
+                        self.theoretical_deviations[motor] = theoretical_deviations[motor]
+            
+            # 更新界面数据
+            self.current_angles.update(current_angles)
+            filtered_data = {
+                "current": current_angles,
+                "theoretical": {k: v for k, v in theoretical_deviations.items() if k in self.active_motors},
+                "realtime": {k: v for k, v in realtime_deviations.items() if k in self.active_motors},
+                "targets": {k: v for k, v in theoretical_targets.items() if k in self.active_motors}
+            }
+            self.angle_update.emit(filtered_data)
+            # 注意：图表更新已移至 update_angles 中通过节流机制处理
+            # 不再在此处直接调用 chart_view.chart().update_data()
+        except Exception as e:
+            print(f"handle_angle_packet error: {e}")
 
     def format_number(self, value):
         """格式化数值，去除末尾多余的零和小数点"""
         s = "{:.3f}".format(value).rstrip('0').rstrip('.')
         return s
 
-    def send_angle_request(self):
-        self.request_angles()  # 发送获取角度指令
-        # 等待50ms后处理校准结果
-        QTimer.singleShot(100, self.process_calibration_result)
-
-    def process_calibration_result(self):
-        validation_passed = True
-        for motor in ["X", "Y", "Z", "A"]:
-            if self.calibration_switches[motor].isChecked():
-                # 获取校准后的最新角度
-                current_angle = self.current_angles.get(motor, 0) % 360
-
-                # 验证校准精度（±1°范围内视为成功）
-                if min(current_angle, 360 - current_angle) > 1.5:
-                    validation_passed = False
-                    self.log(f"电机{motor}校准偏差过大：{current_angle:.2f}°")
-
-        if validation_passed or self.calibration_attempts >= 3:
-            if validation_passed:
-                self.log("校准成功完成")
-                self.clear_chart()
-                QMessageBox.information(self, "完成", "电机校准完成")
-            else:
-                self.log("校准失败，请检查机械结构")
-                QMessageBox.warning(self, "错误", "校准失败，请检查电机是否卡顿")
-        else:
-            self.calibration_attempts += 1
-            self.send_calibration_command()
-
-    def run_calibration_cycle(self):
-        # 发送获取角度指令
-        self.request_angles()
-
-        # 延时后执行校准
-        QTimer.singleShot(500, self.process_calibration)
-
-    def process_calibration(self):
-        # 生成校准指令
-        command = ""
-        for motor in ["X", "Y", "Z", "A"]:
-            if self.calibration_switches[motor].isChecked():
-                current = self.current_angles.get(motor, 0)
-                angle_to_move = -round(current % 360, 3)
-
-                # 生成带三位小数的角度指令
-                cmd = f"{motor}EFV20J{abs(angle_to_move):.3f}"  # 固定速度20RPM
-                if angle_to_move < 0:
-                    cmd = cmd.replace("EF", "EB")
-                command += cmd
-
-        # 发送完整指令（包含所有电机）
-        full_command = ""
-        for m in ["X", "Y", "Z", "A"]:
-            if m in command:
-                full_command += command.split(m)[1].split("J")[0] + "J"  # 提取对应电机指令
-            else:
-                full_command += f"{m}DFV0J0"  # 未校准电机发送停转指令
-
-        if self.send_command(full_command + "\r\n"):
-            self.calibration_attempts += 1
-            QTimer.singleShot(1000, self.validate_calibration)
-
-    def validate_calibration(self):
-        # 检查最近两次角度值
-        valid = True
-        for motor in ["X", "Y", "Z", "A"]:
-            if self.calibration_switches[motor].isChecked():
-                angles = self.last_calibration_angles[motor][-2:]
-                if len(angles) < 2 or any(abs(a) > 0.5 for a in angles):
-                    valid = False
-
-        if valid or self.calibration_attempts >= 5:  # 最大尝试5次
-            if valid:
-                self.log("校准成功完成")
-                QMessageBox.information(self, "完成", "电机校准完成")
-            else:
-                self.log("校准失败，请检查连接")
-                QMessageBox.warning(self, "错误", "校准失败，请手动检查")
-        else:
-            self.run_calibration_cycle()
-
     def init_analysis_tab(self):
-        """初始化分析标签页布局"""
+        """初始化 PID 控制分析标签页布局"""
         layout = QVBoxLayout(self.analysis_tab)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        layout.setSpacing(10)
 
-        # ================= 图表展示区域 =================
-        self.chart_view = QChartView(AnalysisChart())
-        self.chart_view.setRenderHint(QPainter.Antialiasing, True)
-        self.chart_view.setMinimumHeight(350)
-        layout.addWidget(self.chart_view, stretch=3)
+        # ================= 使用TabWidget分隔分析和优化 =================
+        self.analysis_sub_tabs = QTabWidget()
+        
+        # ----- 子标签1: PID实时分析 -----
+        analysis_widget = QWidget()
+        analysis_layout = QVBoxLayout(analysis_widget)
+        analysis_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # PID 实时状态面板
+        self.pid_stats_panel = PIDStatsPanel()
+        analysis_layout.addWidget(self.pid_stats_panel, stretch=0)
 
-        # ================= 控制按钮区域 =================
+        # PID 分析图表
+        self.pid_analysis_chart = PIDAnalysisChart()
+        analysis_layout.addWidget(self.pid_analysis_chart, stretch=3)
+
+        # 控制按钮区域
         control_frame = QFrame()
         control_layout = QHBoxLayout(control_frame)
         control_layout.setContentsMargins(5, 5, 5, 5)
         control_layout.setSpacing(10)
 
-        # 电机选择组件
-        motor_selector = QFrame()
-        hbox_motor = QHBoxLayout(motor_selector)
-        hbox_motor.setContentsMargins(0, 0, 0, 0)
-        hbox_motor.addWidget(QLabel("保存电机数据:"))
-
-        self.export_motor_combo = QComboBox()
-        self.export_motor_combo.addItems(["全部", "X轴", "Y轴", "Z轴", "A轴"])
-        self.export_motor_combo.setFixedWidth(120)
-        self.export_motor_combo.setFont(QFont("Microsoft YaHei", 10))
-        hbox_motor.addWidget(self.export_motor_combo)
-
-        control_layout.addWidget(motor_selector)
-
-        # 操作按钮组
         button_style = """
         QPushButton {
             font-size: 12px;
-            padding: 5px 8px;
-            min-width: 70px;
-            max-height: 28px;
+            padding: 5px 10px;
+            min-width: 80px;
+            max-height: 30px;
             border-radius: 4px;
         }
         QPushButton:hover {
@@ -929,10 +1250,10 @@ class MotorControlApp(QMainWindow):
         """
 
         action_buttons = [
-            ("导入数据", self.import_chart_data),  # 新增按钮
-            ("清空图表", self.clear_chart),
-            ("保存图片", self.save_chart_image),
-            ("导出数据", self.export_chart_data)
+            ("清空图表", self.clear_pid_chart),
+            ("重置统计", self.reset_pid_stats),
+            ("导出报告", self.export_pid_report),
+            ("导出数据", self.export_pid_data),
         ]
 
         for btn_text, handler in action_buttons:
@@ -941,64 +1262,646 @@ class MotorControlApp(QMainWindow):
             btn.clicked.connect(handler)
             control_layout.addWidget(btn)
 
-        control_layout.addStretch(1)  # 右侧弹性空间
-        layout.addWidget(control_frame, stretch=0)
+        control_layout.addStretch(1)
+        analysis_layout.addWidget(control_frame, stretch=0)
 
-        # ================= 统计面板区域 =================
-        stats_group = QGroupBox("偏差统计")
-        stats_group.setFont(QFont("Microsoft YaHei", 12))
-        stats_layout = QHBoxLayout(stats_group)
+        # 历史统计面板
+        history_group = QGroupBox("历史统计")
+        history_group.setFont(QFont("Microsoft YaHei", 11))
+        history_layout = QHBoxLayout(history_group)
 
-        # 为每个电机创建统计面板
         self.stats_widgets = {}
         for motor in ["X", "Y", "Z", "A"]:
-            group = QGroupBox(f"电机{motor}")
+            group = QGroupBox(f"微泵 {motor}")
             form = QFormLayout(group)
+            form.setSpacing(4)
 
             labels = {
-                'current': QLabel("0.00°"),
-                'theoretical': QLabel("0.00°"),
-                'average': QLabel("0.00°"),
-                'dev_rate': QLabel("N/A")
+                'total_runs': QLabel("0"),
+                'success_rate': QLabel("--"),
+                'avg_conv_time': QLabel("--"),
+                'avg_error': QLabel("--"),
             }
 
-            # 设置标签样式
             for lbl in labels.values():
-                lbl.setFont(QFont("Roboto Mono", 10))
+                lbl.setFont(QFont("Roboto Mono", 9))
                 lbl.setAlignment(Qt.AlignRight)
 
-            form.addRow("实时偏差:", labels['current'])
-            form.addRow("理论偏差:", labels['theoretical'])
-            form.addRow("平均偏差:", labels['average'])
-            form.addRow("偏差率:", labels['dev_rate'])
+            form.addRow("运行次数:", labels['total_runs'])
+            form.addRow("成功率:", labels['success_rate'])
+            form.addRow("平均收敛:", labels['avg_conv_time'])
+            form.addRow("平均误差:", labels['avg_error'])
 
             self.stats_widgets[motor] = labels
-            stats_layout.addWidget(group)
+            history_layout.addWidget(group)
 
-        layout.addWidget(stats_group, stretch=1)
+        analysis_layout.addWidget(history_group, stretch=0)
+        
+        self.analysis_sub_tabs.addTab(analysis_widget, "PID实时分析")
+        
+        # ----- 子标签2: PID参数优化 -----
+        self.pid_optimizer_panel = PIDOptimizerPanel()
+        self._init_pid_optimizer()
+        self.analysis_sub_tabs.addTab(self.pid_optimizer_panel, "PID参数优化")
+        
+        layout.addWidget(self.analysis_sub_tabs)
+        
+        # ================= 兼容旧版图表（隐藏） =================
+        self.chart_view = QChartView(AnalysisChart())
+        self.chart_view.setVisible(False)
+        layout.addWidget(self.chart_view)
+    
+    def _init_pid_optimizer(self):
+        """初始化PID优化器"""
+        self.pid_optimizer = PatternSearchOptimizer()
+        
+        # 设置串口发送回调
+        self.pid_optimizer.set_send_callback(self.send_command)
+        
+        # 连接优化器信号
+        self.pid_optimizer.progress_updated.connect(self.pid_optimizer_panel.update_progress)
+        self.pid_optimizer.score_updated.connect(self.pid_optimizer_panel.update_score)
+        self.pid_optimizer.state_changed.connect(self.pid_optimizer_panel.on_state_changed)
+        self.pid_optimizer.optimization_finished.connect(self._on_optimization_finished)
+        self.pid_optimizer.error_occurred.connect(lambda msg: self.log(f"优化器错误: {msg}"))
+        
+        # 连接面板信号
+        self.pid_optimizer_panel.start_optimization.connect(self._start_pid_optimization)
+        self.pid_optimizer_panel.stop_optimization.connect(self._stop_pid_optimization)
+        self.pid_optimizer_panel.pause_optimization.connect(self.pid_optimizer.pause)
+        self.pid_optimizer_panel.resume_optimization.connect(self.pid_optimizer.resume)
+        self.pid_optimizer_panel.apply_params.connect(self._apply_pid_params)
+        self.pid_optimizer_panel.single_test.connect(self._run_single_pid_test)
+        self.pid_optimizer_panel.export_data.connect(self._export_pid_optimization_data)
+        
+        # 初始化单次测试状态
+        self._single_test_active = False
+        self._single_test_results = []
+        self._single_test_params = {}
+    
+    def _start_pid_optimization(self, config: dict):
+        """开始PID优化"""
+        if not self.serial_port or not self.serial_port.is_open:
+            QMessageBox.warning(self, "警告", "请先打开串口连接")
+            self.pid_optimizer_panel.on_state_changed('idle')
+            return
+        
+        # 配置优化器
+        self.pid_optimizer.configure(
+            test_motor=config.get('test_motor', 'X'),
+            test_angle=config.get('test_angle', 45.0),
+            test_runs=config.get('test_runs', 5),
+            max_iterations=config.get('max_iterations', 50),
+            initial_step=config.get('initial_step', 0.02),
+            min_step=config.get('min_step', 0.005)
+        )
+        
+        # 创建初始参数
+        initial = config.get('initial_params', {})
+        initial_params = PIDParams(
+            Kp=initial.get('Kp', 0.14),
+            Ki=initial.get('Ki', 0.015),
+            Kd=initial.get('Kd', 0.06)
+        )
+        
+        self.log(f"开始PID参数优化: 电机={config.get('test_motor')}, 角度={config.get('test_angle')}°")
+        self.pid_optimizer.start(initial_params)
+    
+    def _stop_pid_optimization(self):
+        """停止PID优化和单次测试"""
+        # 停止优化器
+        self.pid_optimizer.stop()
+        
+        # 停止单次测试
+        if getattr(self, '_single_test_active', False):
+            self._single_test_active = False
+            self.send_command("PIDTESTSTOP\r\n")
+            self.pid_optimizer_panel.on_single_test_complete()
+        
+        self.log("PID参数优化/测试已停止")
+    
+    def _on_optimization_finished(self, result: dict):
+        """优化完成处理"""
+        self.pid_optimizer_panel.on_optimization_finished(result)
+        
+        best = result.get('best_params', {})
+        self.log(f"PID优化完成! 最优参数: Kp={best.get('Kp', 0):.4f}, Ki={best.get('Ki', 0):.5f}, Kd={best.get('Kd', 0):.4f}")
+        self.log(f"最优得分: {result.get('best_score', 0):.1f}, 迭代次数: {result.get('iterations', 0)}")
+        
+        # 更新历史记录
+        for record in self.pid_optimizer.get_history_summary():
+            self.pid_optimizer_panel.add_history_record(record)
+    
+    def _apply_pid_params(self, params: dict):
+        """应用PID参数到下位机"""
+        if not self.serial_port or not self.serial_port.is_open:
+            QMessageBox.warning(self, "警告", "请先打开串口连接")
+            return
+        
+        cmd = f"PIDCFG:{params.get('Kp', 0.14):.4f},{params.get('Ki', 0.015):.5f},{params.get('Kd', 0.06):.4f}\r\n"
+        if self.send_command(cmd):
+            self.log(f"已应用PID参数: Kp={params.get('Kp'):.4f}, Ki={params.get('Ki'):.5f}, Kd={params.get('Kd'):.4f}")
+    
+    def _run_single_pid_test(self, config: dict):
+        """执行单次PID测试（用于调试）"""
+        if not self.serial_port or not self.serial_port.is_open:
+            QMessageBox.warning(self, "警告", "请先打开串口连接")
+            self.pid_optimizer_panel.on_single_test_complete()
+            return
+        
+        params = config.get('params', {})
+        motor = config.get('test_motor', 'X')
+        angle = config.get('test_angle', 45.0)
+        runs = config.get('test_runs', 1)
+        
+        # 保存单次测试参数，用于结果回调
+        self._single_test_params = params.copy()
+        self._single_test_runs = runs
+        self._single_test_results = []
+        self._single_test_active = True
+        
+        # 先配置PID参数
+        cfg_cmd = f"PIDCFG:{params.get('Kp', 0.14):.4f},{params.get('Ki', 0.015):.5f},{params.get('Kd', 0.06):.4f}\r\n"
+        self.log(f"[单次测试] 发送PID配置: {cfg_cmd.strip()}")
+        if not self.send_command(cfg_cmd):
+            self.log("[单次测试] PID配置发送失败")
+            self._single_test_active = False
+            self.pid_optimizer_panel.on_single_test_complete()
+            return
+        
+        # 等待200ms后发送测试指令
+        def send_test():
+            test_cmd = f"PIDTEST:{motor},{angle:.1f},{runs}\r\n"
+            self.log(f"[单次测试] 发送测试指令: {test_cmd.strip()}")
+            if self.send_command(test_cmd):
+                self.log(f"[单次测试] 测试已启动: 电机={motor}, 角度={angle}°, 次数={runs}")
+            else:
+                self.log("[单次测试] 测试指令发送失败")
+                self._single_test_active = False
+                self.pid_optimizer_panel.on_single_test_complete()
+        
+        QTimer.singleShot(200, send_test)
+    
+    def _on_single_test_complete(self):
+        """单次测试完成处理"""
+        results = getattr(self, '_single_test_results', [])
+        params = getattr(self, '_single_test_params', {})
+        
+        if results:
+            # 计算平均得分
+            avg_score = sum(r.total_score for r in results) / len(results)
+            
+            # 更新面板
+            result_data = {
+                'score': avg_score,
+                'Kp': params.get('Kp', 0.14),
+                'Ki': params.get('Ki', 0.015),
+                'Kd': params.get('Kd', 0.06),
+                'runs': len(results)
+            }
+            self.pid_optimizer_panel.on_single_test_result(result_data)
+            self.log(f"[单次测试] 完成! 平均得分: {avg_score:.1f}, 测试次数: {len(results)}")
+        else:
+            self.log("[单次测试] 完成，但未收到测试结果")
+        
+        # 通知面板测试完成
+        self.pid_optimizer_panel.on_single_test_complete()
+        
+        # 清理状态
+        self._single_test_results = []
+        self._single_test_params = {}
+
+    def _export_pid_optimization_data(self):
+        """导出PID优化数据到CSV文件"""
+        from PySide6.QtWidgets import QFileDialog
+        import csv
+        from datetime import datetime
+        
+        # 获取优化历史
+        history = self.pid_optimizer.get_history_summary()
+        if not history:
+            QMessageBox.information(self, "提示", "没有可导出的优化数据")
+            return
+        
+        # 选择保存路径
+        default_name = f"pid_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出PID优化数据", default_name, "CSV文件 (*.csv)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                # 写入表头
+                writer.writerow(['迭代', 'Kp', 'Ki', 'Kd', '原始得分', '调整得分', '最大过冲°', '收敛时间ms', 'RSD%'])
+                # 写入数据
+                for record in history:
+                    writer.writerow([
+                        record.get('index', 0),
+                        f"{record.get('Kp', 0):.4f}",
+                        f"{record.get('Ki', 0):.5f}",
+                        f"{record.get('Kd', 0):.4f}",
+                        f"{record.get('avg_score', 0):.1f}",
+                        f"{record.get('adjusted_score', record.get('avg_score', 0)):.1f}",
+                        f"{record.get('max_overshoot', 0):.2f}",
+                        f"{record.get('avg_conv_time', 0):.0f}",
+                        f"{record.get('convergence_rsd', 0):.1f}"
+                    ])
+                
+                # 写入最优参数
+                writer.writerow([])
+                writer.writerow(['最优参数（贝叶斯优化 + 非线性惩罚）'])
+                if self.pid_optimizer.best_params:
+                    writer.writerow(['Kp', f"{self.pid_optimizer.best_params.Kp:.4f}"])
+                    writer.writerow(['Ki', f"{self.pid_optimizer.best_params.Ki:.5f}"])
+                    writer.writerow(['Kd', f"{self.pid_optimizer.best_params.Kd:.4f}"])
+                    writer.writerow(['最优得分（惩罚后）', f"{self.pid_optimizer.best_score:.1f}"])
+            
+            self.log(f"[导出] PID优化数据已导出到: {file_path}")
+            QMessageBox.information(self, "成功", f"数据已导出到:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败: {e}")
 
     def clear_chart(self):
         # 清空图表数据
+        # 清空旧版图表
         self.chart_view.chart().clear()
         # 重置偏差数据集
         self.deviation_data = {m: deque(maxlen=100) for m in ["X", "Y", "Z", "A"]}
         self.theoretical_deviations = {m: None for m in ["X", "Y", "Z", "A"]}
         self.target_angles = {m: None for m in ["X", "Y", "Z", "A"]}
         self.expected_rotation = {m: 0.0 for m in ["X", "Y", "Z", "A"]}
-        # 更新实时数据表
-        current_angles = {m: self.current_angles.get(m, 0.0) for m in ["X", "Y", "Z", "A"]}
-        deviations = {m: None for m in ["X", "Y", "Z", "A"]}
-        self.update_angle_table(current_angles, self.target_angles, deviations)
         # 重置统计数据和颜色
         for motor in ["X", "Y", "Z", "A"]:
             labels = self.stats_widgets[motor]
-            labels['current'].setText("N/A°")
-            labels['theoretical'].setText("N/A°")
-            labels['average'].setText("N/A°")
-            labels['dev_rate'].setText("N/A")
+            labels['total_runs'].setText("0")
+            labels['success_rate'].setText("--")
+            labels['avg_conv_time'].setText("--")
+            labels['avg_error'].setText("--")
             for label in labels.values():
                 label.setStyleSheet("color: black;")
         self.log("图表和统计数据已重置")
+    
+    def clear_pid_chart(self):
+        """清空 PID 分析图表"""
+        self.pid_analysis_chart.clear_all()
+        self.pid_analyzer.clear_realtime_data()
+        self.pid_stats_panel.reset_all()
+        self.log("PID 分析图表已清空")
+    
+    def reset_pid_stats(self):
+        """重置 PID 统计数据"""
+        reply = QMessageBox.question(
+            self, "确认重置",
+            "确定要重置所有 PID 历史统计数据吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.pid_analyzer.reset()
+            self.clear_pid_chart()
+            self._update_pid_history_stats()
+            self.log("PID 统计数据已重置")
+    
+    def export_pid_report(self):
+        """导出 PID 分析报告"""
+        try:
+            import pandas as pd
+        except ImportError:
+            QMessageBox.critical(self, "错误", "请先安装 pandas 库：pip install pandas")
+            return
+        
+        # 收集统计数据
+        report_data = []
+        for motor in ["X", "Y", "Z", "A"]:
+            stats = self.pid_analyzer.get_stats_summary(motor)
+            stats['motor'] = motor
+            report_data.append(stats)
+        
+        if not any(d['total_runs'] > 0 for d in report_data):
+            QMessageBox.warning(self, "警告", "没有可导出的 PID 运行数据")
+            return
+        
+        # 保存对话框
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"pid_report_{timestamp}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 PID 报告", filename,
+            "Excel文件 (*.xlsx)"
+        )
+        
+        if path:
+            try:
+                df = pd.DataFrame(report_data)
+                df = df[['motor', 'total_runs', 'success_rate', 'avg_convergence_time', 
+                         'min_convergence_time', 'max_convergence_time', 
+                         'avg_final_error', 'max_final_error', 'timeout_count', 'fail_count']]
+                df.columns = ['电机', '运行次数', '成功率', '平均收敛时间', 
+                              '最短收敛时间', '最长收敛时间',
+                              '平均最终误差', '最大最终误差', '超时次数', '失败次数']
+                df.to_excel(path, index=False)
+                self.log(f"PID 报告已导出至 {path}")
+            except Exception as e:
+                QMessageBox.critical(self, "导出错误", f"文件写入失败: {str(e)}")
+    
+    def export_pid_data(self):
+        """导出 PID 控制数据到 Excel 文件"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            QMessageBox.critical(self, "错误", "请先安装 openpyxl 库：pip install openpyxl")
+            return
+        
+        # 保存对话框
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"pid_data_{timestamp}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 PID 数据", filename, "Excel 文件 (*.xlsx)"
+        )
+        
+        if not path:
+            return
+        
+        try:
+            wb = Workbook()
+            
+            # 样式定义
+            header_font = Font(name='Arial', size=11, bold=True)
+            header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+            header_font_white = Font(name='Arial', size=11, bold=True, color='FFFFFF')
+            data_font = Font(name='Arial', size=10)
+            center_align = Alignment(horizontal='center', vertical='center')
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            def apply_header_style(ws, row=1):
+                for cell in ws[row]:
+                    cell.font = header_font_white
+                    cell.fill = header_fill
+                    cell.alignment = center_align
+                    cell.border = thin_border
+            
+            def apply_data_style(ws, start_row=2):
+                for row in ws.iter_rows(min_row=start_row):
+                    for cell in row:
+                        cell.font = data_font
+                        cell.alignment = center_align
+                        cell.border = thin_border
+            
+            def auto_column_width(ws, min_width=10, max_width=25):
+                for column_cells in ws.columns:
+                    max_length = 0
+                    column = column_cells[0].column_letter
+                    for cell in column_cells:
+                        try:
+                            if cell.value:
+                                max_length = max(max_length, len(str(cell.value)))
+                        except:
+                            pass
+                    adjusted_width = min(max(max_length + 2, min_width), max_width)
+                    ws.column_dimensions[column].width = adjusted_width
+            
+            # ========== Sheet 1: Summary (统计摘要) ==========
+            ws_summary = wb.active
+            ws_summary.title = "Summary"
+            headers = ["Motor", "Total Runs", "Success Rate", "Avg Conv Time (s)", 
+                      "Min Conv Time (s)", "Max Conv Time (s)", "Avg Error (°)", 
+                      "Max Error (°)", "Timeout", "Failed"]
+            ws_summary.append(headers)
+            
+            for motor in ["X", "Y", "Z", "A"]:
+                stats = self.pid_analyzer.stats[motor]
+                row = [
+                    motor,
+                    stats.total_runs,
+                    f"{stats.success_rate:.1f}%",
+                    f"{stats.avg_convergence_time:.3f}" if stats.successful_runs > 0 else "-",
+                    f"{stats.min_convergence_time:.3f}" if stats.min_convergence_time else "-",
+                    f"{stats.max_convergence_time:.3f}" if stats.max_convergence_time else "-",
+                    f"{stats.avg_final_error:.3f}" if stats.successful_runs > 0 else "-",
+                    f"{stats.max_final_error:.3f}" if stats.max_final_error > 0 else "-",
+                    stats.timeout_runs,
+                    stats.failed_runs
+                ]
+                ws_summary.append(row)
+            
+            apply_header_style(ws_summary)
+            apply_data_style(ws_summary)
+            auto_column_width(ws_summary)
+            ws_summary.freeze_panes = 'A2'
+            
+            # ========== Sheet 2: Error Distribution (误差分布) ==========
+            ws_error_dist = wb.create_sheet("Error Distribution")
+            ws_error_dist.append(["Index", "Motor", "Final Error (°)"])
+            
+            idx = 1
+            for motor in ["X", "Y", "Z", "A"]:
+                for error in self.pid_analyzer.stats[motor].error_distribution:
+                    ws_error_dist.append([idx, motor, f"{error:.4f}"])
+                    idx += 1
+            
+            apply_header_style(ws_error_dist)
+            apply_data_style(ws_error_dist)
+            auto_column_width(ws_error_dist)
+            ws_error_dist.freeze_panes = 'A2'
+            
+            # ========== Sheet 3: Run History (运行历史) ==========
+            ws_history = wb.create_sheet("Run History")
+            ws_history.append(["Run ID", "Motor", "Target (°)", "Precision (°)", 
+                              "Duration (s)", "Final Angle (°)", "Final Error (°)", "Status"])
+            
+            run_id = 1
+            for motor in ["X", "Y", "Z", "A"]:
+                for record in self.pid_analyzer.history[motor]:
+                    row = [
+                        run_id,
+                        motor,
+                        f"{record.target_angle:.2f}",
+                        f"{record.precision:.2f}",
+                        f"{record.duration:.3f}" if record.duration else "-",
+                        f"{record.final_angle:.3f}" if record.final_angle is not None else "-",
+                        f"{record.final_error:.3f}" if record.final_error is not None else "-",
+                        record.status.value
+                    ]
+                    ws_history.append(row)
+                    run_id += 1
+            
+            apply_header_style(ws_history)
+            apply_data_style(ws_history)
+            auto_column_width(ws_history)
+            ws_history.freeze_panes = 'A2'
+            
+            # ========== Sheet 4: Realtime Position (实时位置追踪，最多20000点) ==========
+            ws_position = wb.create_sheet("Realtime Position")
+            pos_headers = ["Time (s)"]
+            for motor in ["X", "Y", "Z", "A"]:
+                pos_headers.extend([f"{motor}_Target", f"{motor}_Actual", f"{motor}_Theo"])
+            ws_position.append(pos_headers)
+            
+            # 使用pid_analyzer的导出数据（大缓冲区）
+            all_times = set()
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_position_data(motor):
+                    all_times.add(round(data[0], 3))
+            
+            # 构建数据字典
+            pos_dict = {motor: {} for motor in ["X", "Y", "Z", "A"]}
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_position_data(motor):
+                    t = round(data[0], 3)
+                    pos_dict[motor][t] = (data[1], data[2], data[3])  # target, actual, theo
+            
+            for t in sorted(all_times):
+                row = [f"{t:.3f}"]
+                for motor in ["X", "Y", "Z", "A"]:
+                    if t in pos_dict[motor]:
+                        target, actual, theo = pos_dict[motor][t]
+                        row.extend([f"{target:.3f}", f"{actual:.3f}", f"{theo:.3f}"])
+                    else:
+                        row.extend(["-", "-", "-"])
+                ws_position.append(row)
+            
+            apply_header_style(ws_position)
+            apply_data_style(ws_position)
+            auto_column_width(ws_position)
+            ws_position.freeze_panes = 'A2'
+            
+            # ========== Sheet 5: Realtime PID Output (最多20000点) ==========
+            ws_output = wb.create_sheet("Realtime Output")
+            ws_output.append(["Time (s)", "X_Output (RPM)", "Y_Output (RPM)", 
+                             "Z_Output (RPM)", "A_Output (RPM)"])
+            
+            all_times = set()
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_output_data(motor):
+                    all_times.add(round(data[0], 3))
+            
+            out_dict = {motor: {} for motor in ["X", "Y", "Z", "A"]}
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_output_data(motor):
+                    out_dict[motor][round(data[0], 3)] = data[1]
+            
+            for t in sorted(all_times):
+                row = [f"{t:.3f}"]
+                for motor in ["X", "Y", "Z", "A"]:
+                    if t in out_dict[motor]:
+                        row.append(f"{out_dict[motor][t]:.3f}")
+                    else:
+                        row.append("-")
+                ws_output.append(row)
+            
+            apply_header_style(ws_output)
+            apply_data_style(ws_output)
+            auto_column_width(ws_output)
+            ws_output.freeze_panes = 'A2'
+            
+            # ========== Sheet 6: Realtime Error (最多20000点) ==========
+            ws_error = wb.create_sheet("Realtime Error")
+            ws_error.append(["Time (s)", "X_Error (°)", "Y_Error (°)", 
+                            "Z_Error (°)", "A_Error (°)"])
+            
+            # 使用pid_analyzer的导出数据（大缓冲区）
+            all_times = set()
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_error_data(motor):
+                    all_times.add(round(data[0], 3))
+            
+            err_dict = {motor: {} for motor in ["X", "Y", "Z", "A"]}
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_error_data(motor):
+                    err_dict[motor][round(data[0], 3)] = data[1]
+            
+            for t in sorted(all_times):
+                row = [f"{t:.3f}"]
+                for motor in ["X", "Y", "Z", "A"]:
+                    if t in err_dict[motor]:
+                        row.append(f"{err_dict[motor][t]:.3f}")
+                    else:
+                        row.append("-")
+                ws_error.append(row)
+            
+            apply_header_style(ws_error)
+            apply_data_style(ws_error)
+            auto_column_width(ws_error)
+            ws_error.freeze_panes = 'A2'
+            
+            # ========== Sheet 7: Realtime Load (最多20000点) ==========
+            ws_load = wb.create_sheet("Realtime Load")
+            ws_load.append(["Time (s)", "X_Load (°)", "Y_Load (°)", 
+                           "Z_Load (°)", "A_Load (°)"])
+            
+            # 使用pid_analyzer的导出数据（大缓冲区）
+            all_times = set()
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_load_data(motor):
+                    all_times.add(round(data[0], 3))
+            
+            load_dict = {motor: {} for motor in ["X", "Y", "Z", "A"]}
+            for motor in ["X", "Y", "Z", "A"]:
+                for data in self.pid_analyzer.get_export_load_data(motor):
+                    load_dict[motor][round(data[0], 3)] = data[1]
+            
+            for t in sorted(all_times):
+                row = [f"{t:.3f}"]
+                for motor in ["X", "Y", "Z", "A"]:
+                    if t in load_dict[motor]:
+                        row.append(f"{load_dict[motor][t]:.3f}")
+                    else:
+                        row.append("-")
+                ws_load.append(row)
+            
+            apply_header_style(ws_load)
+            apply_data_style(ws_load)
+            auto_column_width(ws_load)
+            ws_load.freeze_panes = 'A2'
+            
+            # 保存文件
+            wb.save(path)
+            self.log(f"PID 数据已导出至 {path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"数据导出失败: {str(e)}")
+    
+    def _update_pid_analysis_display(self):
+        """更新 PID 分析显示（定时器回调）"""
+        # 更新活动电机的实时状态
+        for motor in ["X", "Y", "Z", "A"]:
+            status = self.pid_analyzer.get_motor_status(motor)
+            
+            if status == PIDStatus.RUNNING:
+                self.pid_stats_panel.update_status(motor, "运行中", "#2ca02c")
+                # 获取最新误差数据
+                error_data = self.pid_analyzer.get_realtime_error_data(motor)
+                if error_data:
+                    latest_error = error_data[-1][1]
+                    self.pid_stats_panel.update_error(motor, latest_error)
+            elif status == PIDStatus.DONE:
+                self.pid_stats_panel.update_status(motor, "已完成", "#1f77b4")
+            elif status == PIDStatus.TIMEOUT:
+                self.pid_stats_panel.update_status(motor, "超时", "#ff7f0e")
+            elif status == PIDStatus.FAILED:
+                self.pid_stats_panel.update_status(motor, "失败", "#d62728")
+            else:
+                self.pid_stats_panel.update_status(motor, "空闲", "#888888")
+    
+    def _update_pid_history_stats(self):
+        """更新 PID 历史统计显示"""
+        for motor in ["X", "Y", "Z", "A"]:
+            stats = self.pid_analyzer.stats[motor]
+            labels = self.stats_widgets[motor]
+            
+            labels['total_runs'].setText(str(stats.total_runs))
+            labels['success_rate'].setText(f"{stats.success_rate:.1f}%")
+            labels['avg_conv_time'].setText(f"{stats.avg_convergence_time:.2f}s")
+            labels['avg_error'].setText(f"{stats.avg_final_error:.2f}°")
 
     def save_chart_image(self):
         """保存为图片文件"""
@@ -1193,10 +2096,23 @@ class MotorControlApp(QMainWindow):
                 labels['average'].setText(f"{avg:.2f}°")
                 labels['dev_rate'].setText(f"{(current / avg * 100 if avg != 0 else 0):.1f}%")
 
-    def request_angles(self):
-        """发送获取角度指令"""
-        ANGLE_command = "GETANGLE"
-        self.send_command(ANGLE_command + "\r\n")
+    def toggle_streaming(self, checked: bool):
+        """
+        切换实时角度流模式
+        
+        Args:
+            checked: 是否开启实时流
+        """
+        if checked:
+            self.send_command("ANGLESTREAM_START\r\n")
+            self.stream_btn.setText("停止实时")
+            self.stream_btn.setStyleSheet(
+                "font-size: 18px; padding: 8px; background-color: #4CAF50; color: white;"
+            )
+        else:
+            self.send_command("ANGLESTREAM_STOP\r\n")
+            self.stream_btn.setText("实时角度")
+            self.stream_btn.setStyleSheet("font-size: 18px; padding: 8px;")
 
     def switch_tab(self, index):
         self.tab_widget.setCurrentIndex(index)
@@ -1206,68 +2122,30 @@ class MotorControlApp(QMainWindow):
             btn.setChecked(i == index)
 
     def update_angles(self, data):
-        """更新角度显示（适配新版数据结构）"""
+        """更新角度显示（适配新版数据结构）- 带节流机制"""
         try:
-            for motor in self.active_motors:
+            if getattr(self, '_closing', False):
+                return
+            
+            # 更新所有电机的圆形动画和角度标签
+            for motor in ["X", "Y", "Z", "A"]:
                 current_angle = data["current"].get(motor, 0)
                 self.motors[motor].set_angle(current_angle % 360)
                 self.angle_labels[motor].setText(f"{current_angle:.3f}°")
-
-            # 清空表格旧数据
-            self.angle_table.clearContents()
-
-            # 仅更新启用电机
-            for motor in data["current"].keys():
-                row = ["X", "Y", "Z", "A"].index(motor)
-
-                current = data["current"][motor]
-                target = data["targets"].get(motor)
-                theo_dev = data["theoretical"].get(motor)
-                real_dev = data["realtime"].get(motor)
-
-                # 填充表格数据
-                items = [
-                    self._create_centered_item(motor),
-                    self._create_centered_item(f"{current:.1f}°"),
-                    self._create_centered_item(f"{target:.1f}°" if target is not None else "N/A"),
-                    self._create_centered_item(f"{theo_dev:.1f}°" if theo_dev is not None else "N/A"),
-                    self._create_centered_item(f"{real_dev:.1f}°" if real_dev is not None else "N/A")
-                ]
-
-                # 设置偏差颜色
-                for dev, col in [(theo_dev, 3), (real_dev, 4)]:
-                    if dev is not None:
-                        color = "#FF0000" if abs(dev) > 5 else "#FFA500" if abs(dev) > 2 else "black"
-                        items[col].setForeground(QColor(color))
-                for col in range(5):
-                    self.angle_table.setItem(row, col, items[col])
-
+            
+            # 节流：每100ms更新一次图表（10Hz）
+            current_time = time.time()
+            if not hasattr(self, '_last_chart_update_time'):
+                self._last_chart_update_time = 0
+            
+            if current_time - self._last_chart_update_time >= 0.1:
+                self._last_chart_update_time = current_time
+                try:
+                    self.chart_view.chart().update_data(data)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"角度更新异常: {str(e)}")
-            traceback.print_exc()
-
-    def _update_angle_table_row(self, motor, current, target, deviation):
-        """更新表格"""
-        row = ["X", "Y", "Z", "A"].index(motor)
-        # 创建表格项
-        items = [
-            self._create_centered_item(motor),
-            self._create_centered_item(f"{current:.1f}°"),
-            self._create_centered_item(f"{target:.1f}°" if target is not None else "N/A"),
-            self._create_centered_item(f"{deviation:.1f}°" if deviation is not None else "N/A")
-        ]
-        # 偏差颜色设置
-        if deviation is not None:
-            if abs(deviation) > 20:
-                items[-1].setForeground(QColor(255, 0, 0))
-            elif abs(deviation) > 5:
-                items[-1].setForeground(QColor(255, 165, 0))
-        else:
-            # 当偏差为None时，恢复默认颜色
-            items[-1].setForeground(QColor(0, 0, 0))  # 黑色
-        # 更新表格
-        for col in range(4):
-            self.angle_table.setItem(row, col, items[col])
 
     def _create_centered_item(self, text):
         """创建居中显示的表格项"""
@@ -1275,141 +2153,119 @@ class MotorControlApp(QMainWindow):
         item.setTextAlignment(Qt.AlignCenter)
         return item
 
-    def update_angle_table(self, current_data, target_data, deviations):
-        """更新实时角度表格（新增目标列）"""
-        self.angle_table.setRowCount(4)
-
-        for row, motor in enumerate(["X", "Y", "Z", "A"]):
-            current = current_data.get(motor, 0)
-            target = target_data.get(motor)
-            deviation = deviations.get(motor)
-
-            # 格式化显示内容
-            items = [
-                QTableWidgetItem(motor),
-                QTableWidgetItem(f"{current:.3f}°"),
-                QTableWidgetItem(f"{target:.3f}°" if target is not None else "N/A"),
-                QTableWidgetItem(f"{deviation:.3f}°" if deviation is not None else "N/A")
-            ]
-
-            # 偏差颜色标记
-            if deviation is not None:
-                if abs(deviation) > 5:
-                    items[-1].setForeground(QColor(255, 0, 0))  # 红色显示大偏差
-                elif abs(deviation) > 2:
-                    items[-1].setForeground(QColor(255, 165, 0))  # 橙色显示中等偏差
-
-            # 填充表格
-            for col in range(4):
-                item = items[col]
-                item.setTextAlignment(Qt.AlignCenter)
-                self.angle_table.setItem(row, col, item)
-
-    def handle_serial_data(self, data):
-        """处理串口数据并计算两种偏差"""
-        if data.startswith("ANGLE"):
-            # 解析当前角度
-            current_angles = {}
-            matches = re.findall(r"([A-Z])(-?\d+\.\d{3})", data)
-            for motor, value in matches:
-                try:
-                    current_angles[motor] = float(value) % 360
-                except ValueError:
-                    current_angles[motor] = 0.0
-
-            # 计算两种偏差
-            theoretical_deviations = {}
-            theoretical_targets = {}
-            realtime_deviations = {}
-
-            for motor in ["X", "Y", "Z", "A"]:
-                # 仅处理启用电机
-                if motor not in self.active_motors:
-                    theoretical_deviations[motor] = None
-                    realtime_deviations[motor] = None
-                    theoretical_targets[motor] = None
-                    continue
-
-                current = current_angles.get(motor, 0.0)
-
-                # 实时偏差计算
-                if motor in self.pending_targets and self.pending_targets[motor] is not None:
-                    realtime_dev = (current - self.pending_targets[motor]) % 360
-                    realtime_dev = realtime_dev - 360 if realtime_dev > 180 else realtime_dev
-                    realtime_deviations[motor] = realtime_dev
-                else:
-                    realtime_deviations[motor] = None
-
-                # 理论偏差计算
-                if self.initial_angle_base.get(motor) is not None:
-                    theoretical_target = (self.initial_angle_base[motor] +
-                                          self.accumulated_rotation[motor]) % 360
-                    theoretical_targets[motor] = theoretical_target
-                    theoretical_dev = (current - theoretical_target) % 360
-                    if theoretical_dev > 180:
-                        theoretical_dev -= 360
-                    theoretical_deviations[motor] = theoretical_dev
-                else:
-                    theoretical_deviations[motor] = None
-                    theoretical_targets[motor] = None
-
-            # 自动校准处理（仅自动模式）
-            if self.running_mode == "auto" and self.auto_calibration_enabled:
-                for motor in self.active_motors:
-                    if theoretical_deviations[motor] is not None:
-                        self.theoretical_deviations[motor] = theoretical_deviations[motor]
-
-            # 更新界面数据
-            self.current_angles.update(current_angles)
-            filtered_data = {
-                "current": {k: v for k, v in current_angles.items() if k in self.active_motors},
-                "theoretical": {k: v for k, v in theoretical_deviations.items() if k in self.active_motors},
-                "realtime": {k: v for k, v in realtime_deviations.items() if k in self.active_motors},
-                "targets": {k: v for k, v in theoretical_targets.items() if k in self.active_motors}
-            }
-            self.angle_update.emit(filtered_data)  # 发送过滤后的数据
-            self.chart_view.chart().update_data(filtered_data)
-            self.update_stats_panel(filtered_data)
-        else:
-            # 其他非角度数据直接记录
-            self.log(f"接收: {data}")
+    def handle_serial_data(self, data: str):
+        """
+        处理串口文本数据
+        
+        Args:
+            data: 接收到的文本数据行
+        """
+        # PID测试相关消息处理
+        if data.startswith("PIDTEST_"):
+            self._handle_pid_test_message(data)
+            return
+        
+        # PID配置确认
+        if data.startswith("PIDCFG_"):
+            self.log(f"PID配置: {data}")
+            return
+        
+        # PID参数查询响应
+        if data.startswith("PIDPARAM:"):
+            self.log(f"当前PID参数: {data}")
+            return
+        
+        # 角度流控制响应
+        if data.startswith("ANGLESTREAM_"):
+            self.log(f"角度流: {data}")
+            return
+        
+        # 校准相关消息
+        if data.startswith("CAL"):
+            self.handle_calibration_message(data)
+            return
+        
+        # PID定位模式消息
+        if data.startswith("PID_"):
+            self.handle_pid_message(data)
+            return
+        
+        # 下位机忙碌状态
+        if data.startswith("BUSY"):
+            self.log(f"下位机: {data}")
+            return
+        
+        # 流模式状态（兼容旧版）
+        if data.startswith("STREAM"):
+            self.log(f"流模式: {data}")
+            return
+        
+        # 电机状态消息（调试用）
+        if data.startswith("Motor"):
+            self.log(f"电机: {data}")
+            return
+        
+        # 其他消息记录
+        self.log(f"接收: {data}")
+    
+    def _handle_pid_test_message(self, data: str):
+        """
+        处理PID测试相关的文本消息
+        
+        Args:
+            data: PID测试消息
+        """
+        if data.startswith("PIDTEST_START:"):
+            # 测试开始
+            self.log(f"[PID测试] 开始: {data}")
+        
+        elif data.startswith("PIDTEST_RUN:"):
+            # 测试轮次
+            run_index = data.split(':')[1] if ':' in data else '?'
+            self.log(f"[PID测试] 执行轮次 {run_index}")
+        
+        elif data.startswith("PIDTEST_RESULT:"):
+            # 文本格式测试结果（作为备份，主要使用二进制包）
+            self.log(f"[PID测试] 结果: {data}")
+        
+        elif data.startswith("PIDTEST_DONE:"):
+            # 测试完成
+            motor = data.split(':')[1] if ':' in data else '?'
+            self.log(f"[PID测试] 完成: 电机 {motor}")
+            
+            # 通知优化器测试完成
+            if hasattr(self, 'pid_optimizer') and self.pid_optimizer:
+                self.pid_optimizer.on_test_done()
+            
+            # 单次测试完成
+            if getattr(self, '_single_test_active', False):
+                self._single_test_active = False
+                self._on_single_test_complete()
+        
+        elif data.startswith("PIDTEST_STOPPED"):
+            # 测试被停止
+            self.log("[PID测试] 已停止")
+            
+            # 如果单次测试被停止
+            if getattr(self, '_single_test_active', False):
+                self._single_test_active = False
+                self.pid_optimizer_panel.on_single_test_complete()
+        
+        elif data.startswith("PIDTEST_ERR:"):
+            # 测试错误
+            error = data.split(':')[1] if ':' in data else '未知错误'
+            self.log(f"[PID测试] 错误: {error}")
 
     def update_stats_panel(self, data):
-        """更新统计面板，只处理启用的电机"""
-        for motor in ["X", "Y", "Z", "A"]:
-            labels = self.stats_widgets[motor]
-
-            # 重置未启用电机的显示
-            if motor not in self.active_motors:
-                self._set_stat_na(motor)
-                continue
-
-            # 获取最新数据
-            theo_dev = data["theoretical"].get(motor)
-            real_dev = data["realtime"].get(motor)
-
-            # 计算平均偏差（使用历史数据）
-            motor_data = self.chart_view.chart().data[motor]
-            avg_dev = sum(motor_data) / len(motor_data) if motor_data else 0
-
-            # 计算偏差率（理论偏差/原始转动量）
-            raw_rotation = abs(self.expected_rotation.get(motor, 1))  # 避免除零
-            dev_rate = (abs(theo_dev / raw_rotation) * 100) if raw_rotation != 0 and theo_dev is not None else 0
-
-            # 更新显示
-            labels['current'].setText(f"{real_dev:.2f}°" if real_dev is not None else "N/A")
-            labels['theoretical'].setText(f"{theo_dev:.2f}°" if theo_dev is not None else "N/A")
-            labels['average'].setText(f"{avg_dev:.2f}°")
-            labels['dev_rate'].setText(f"{dev_rate:.1f}%")
-
-            # 根据偏差值设置颜色
-            self._update_stat_color(labels, theo_dev if theo_dev is not None else 0)
+        """更新统计面板（兼容旧版调用）- 已优化，不再直接更新图表"""
+        # 图表更新已移至节流机制，此处不再调用
+        pass
 
     def _set_stat_na(self, motor):
         """设置未启用电机的统计显示"""
         labels = self.stats_widgets[motor]
-        for key in ['current', 'theoretical', 'average', 'dev_rate']:
-            labels[key].setText("N/A")
+        for key in labels.keys():
+            labels[key].setText("--")
             labels[key].setStyleSheet("color: gray;")
 
     def _update_stat_color(self, labels, current_dev):
@@ -1423,7 +2279,7 @@ class MotorControlApp(QMainWindow):
             color = "#FFA500"  # 橙色
 
         # 只更新数值标签的颜色
-        for label_key in ['current', 'theoretical', 'average', 'dev_rate']:
+        for label_key in labels.keys():
             labels[label_key].setStyleSheet(f"color: {color};")
 
     def set_size_policy(self, h_policy, v_policy):
@@ -1464,15 +2320,29 @@ class MotorControlApp(QMainWindow):
         layout = QVBoxLayout(self.manual_tab)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # 电机控制区
+        # 微泵控制区
         motor_frame = QFrame()
         grid_layout = QGridLayout(motor_frame)
         self.motor_widgets = {}
 
+        # 存储手动控制页的GroupBox引用，用于刷新标题
+        self.manual_motor_groups = {}
+        
         motors = [("X", 0, 0), ("Y", 0, 1), ("Z", 1, 0), ("A", 1, 1)]
         for motor, row, col in motors:
-            group = QGroupBox(f"电机 {motor}")
+            # 获取备注并生成标题
+            note = self.settings_manager.get_pump_note(motor)
+            title = f"微泵 {motor} ({note})" if note else f"微泵 {motor}"
+            group = QGroupBox(title)
             group.setFont(QFont("Microsoft YaHei", 16))
+            self.manual_motor_groups[motor] = group
+            
+            # 启用右键菜单
+            group.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            group.customContextMenuRequested.connect(
+                lambda pos, m=motor, g=group: self.show_pump_note_menu(m, pos, g)
+            )
+            
             vbox = QVBoxLayout(group)
 
             # 启用和持续开关
@@ -1780,7 +2650,7 @@ class MotorControlApp(QMainWindow):
 
         # 步骤表格
         self.steps_table = DragDropTreeWidget()
-        self.steps_table.setHeaderLabels(["编号", "名称", "参数配置", "间隔(ms)"])
+        self.steps_table.setHeaderLabels(["编号", "名称", "参数配置", "间隔(s)"])
         self.steps_table.setRootIsDecorated(False)  # 隐藏根节点展开图标
         self.steps_table.setUniformRowHeights(True)  # 统一行高
         self.steps_table.setSortingEnabled(False)  # 禁用排序
@@ -1872,8 +2742,8 @@ class MotorControlApp(QMainWindow):
                 if cfg.get("enable") == "E":
                     desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
                     params_desc.append(desc)
-            params_str = " | ".join(params_desc) if params_desc else "所有电机脱机"
-            interval = step.get("interval", 0)
+            params_str = " | ".join(params_desc) if params_desc else "所有微泵脱机"
+            interval_ms = step.get("interval", 0)
             name = step.get("name", f"步骤 {idx}")
 
             # 创建表格项
@@ -1881,7 +2751,7 @@ class MotorControlApp(QMainWindow):
                 str(idx),
                 name,
                 params_str,
-                str(interval)
+                f"{interval_ms / 1000.0:.1f}"
             ])
             item.setData(0, Qt.UserRole, step)
 
@@ -1959,7 +2829,7 @@ class MotorControlApp(QMainWindow):
         self.log(f"已粘贴步骤到位置 {insert_index + 1}")
 
     def generate_command(self, step_params):
-        """生成带校准的指令（优化版：只为启用的电机生成指令）"""
+        """生成带校准的指令（优化版：支持 PID 闭环模式）"""
         command = ""
         command_active_motors = set()
         self.pending_targets = {m: None for m in ["X", "Y", "Z", "A"]}
@@ -1992,14 +2862,46 @@ class MotorControlApp(QMainWindow):
             dir_factor = direction_map[direction]
 
             try:
+                # 连续转动模式：始终使用传统开环指令
                 if is_continuous:
-                    command += f"{motor}EFV{speed}JG"
+                    command += f"{motor}E{direction}V{speed}JG"
                     self.pending_targets[motor] = None
                     continue
 
                 raw_rotation = float(raw_angle)
                 self.expected_rotation[motor] = raw_rotation
 
+                # ===== PID 精确控制模式 =====
+                # 条件：自动校准开启 且 非连续模式
+                if self.auto_calibration_enabled and not is_continuous:
+                    current = self.current_angles.get(motor, 0.0)
+                    precision = getattr(self, 'pid_precision', 0.5)
+                    
+                    if self.running_mode == "auto":
+                        # 自动模式：使用理论目标角度（基于初始基准 + 累积旋转）
+                        # 这样可以补偿累积误差，确保长期运行的精度
+                        if self.initial_angle_base[motor] is None:
+                            self.initial_angle_base[motor] = current
+                        
+                        # 先更新累积旋转量
+                        self.accumulated_rotation[motor] += raw_rotation * dir_factor
+                        
+                        # 计算理论目标角度（基于初始基准）
+                        target_angle = (self.initial_angle_base[motor] + self.accumulated_rotation[motor]) % 360
+                        self.expected_angles[motor] = target_angle
+                    else:
+                        # 手动模式：基于当前角度计算目标
+                        target_angle = (current + raw_rotation * dir_factor) % 360
+                    
+                    # 生成 PID 定位指令: XEFT90.0P0.5
+                    command += f"{motor}E{direction}T{target_angle:.1f}P{precision}"
+                    
+                    # 更新期望目标
+                    self.pending_targets[motor] = target_angle
+                    
+                    continue
+
+                # ===== 传统开环模式 =====
                 if self.running_mode == "auto":
                     if self.initial_angle_base[motor] is None:
                         base = self.current_angles.get(motor, 0.0)
@@ -2008,11 +2910,8 @@ class MotorControlApp(QMainWindow):
                     raw_rotation_signed = float(raw_angle) * dir_factor
                     self.accumulated_rotation[motor] += raw_rotation_signed
 
-                    if self.auto_calibration_enabled:
-                        compensation = (self.theoretical_deviations.get(motor) or 0.0) * self.calibration_amplitude
-                        calibrated_rotation = raw_rotation_signed - compensation
-                    else:
-                        calibrated_rotation = raw_rotation_signed
+                    # 传统自动校准补偿（当 PID 模式关闭时）
+                    calibrated_rotation = raw_rotation_signed
 
                     actual_rotation = abs(calibrated_rotation)
                     self.expected_angles[motor] = (
@@ -2082,9 +2981,21 @@ class MotorControlApp(QMainWindow):
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
 
+            self._closing = False  # 重置关闭标志
             self.serial_reader = SerialReader(self.serial_port)
-            self.serial_reader.data_received.connect(self.handle_serial_data)
+            # 使用 QueuedConnection 确保信号在主线程处理
+            self.serial_reader.data_received.connect(
+                self.handle_serial_data, Qt.ConnectionType.QueuedConnection)
+            self.serial_reader.pid_packet_received.connect(
+                self.handle_pid_packet, Qt.ConnectionType.QueuedConnection)
+            self.serial_reader.test_result_received.connect(
+                self.handle_test_result_packet, Qt.ConnectionType.QueuedConnection)
+            self.serial_reader.angle_packet_received.connect(
+                self.handle_angle_packet, Qt.ConnectionType.QueuedConnection)
             self.serial_reader.start()
+            
+            # 启动图表批量更新定时器
+            self._chart_update_timer.start()
 
             self.connect_btn.setText("关闭串口")
             self.log(f"串口已连接 {port}@{baudrate}")
@@ -2095,12 +3006,75 @@ class MotorControlApp(QMainWindow):
             QMessageBox.critical(self, "错误", f"发生未知错误: {e}")
 
     def close_serial(self):
-        with self.serial_lock:  # 加锁保证原子操作
-            if hasattr(self, 'serial_reader') and self.serial_reader.isRunning():
-                self.serial_reader.stop()
+        # 设置关闭标志，阻止新的信号处理
+        self._closing = True
+        
+        # 停止图表批量更新定时器
+        try:
+            if hasattr(self, '_chart_update_timer') and self._chart_update_timer.isActive():
+                self._chart_update_timer.stop()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 清空待处理的数据包
+        if hasattr(self, '_pending_pid_packets'):
+            self._pending_pid_packets.clear()
+        
+        # 先停止 PID 更新定时器
+        try:
+            if hasattr(self, 'pid_update_timer') and self.pid_update_timer.isActive():
+                self.pid_update_timer.stop()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 发送停止角度流指令到下位机
+        with self.serial_lock:
             if self.serial_port and self.serial_port.is_open:
-                self.serial_port.close()
+                try:
+                    self.serial_port.write(b"ANGLESTREAM_STOP\r\n")
+                    self.serial_port.flush()
+                    time.sleep(0.1)  # 等待下位机处理
+                except Exception as e:
+                    if not self._closing:
+                        self.log(f"发送停止角度流指令失败: {e}")
+        
+        # 在锁外先断开信号连接（避免死锁）
+        reader = None
+        if hasattr(self, 'serial_reader') and self.serial_reader is not None:
+            reader = self.serial_reader
+            self.serial_reader = None  # 先置空，防止信号处理
+            
+            # 断开所有信号连接
+            try:
+                reader.data_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                reader.pid_packet_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                reader.test_result_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                reader.angle_packet_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        
+        # 停止线程（在锁外）
+        if reader is not None:
+            reader.stop()  # stop方法内部会等待
+        
+        # 关闭串口
+        with self.serial_lock:
+            if self.serial_port and self.serial_port.is_open:
+                try:
+                    self.serial_port.close()
+                except Exception:
+                    pass
                 self.serial_port = None
+        
         self.connect_btn.setText("打开串口")
         self.log("串口已关闭")
         self.status_bar.showMessage("串口已关闭")
@@ -2207,27 +3181,112 @@ class MotorControlApp(QMainWindow):
             self.log("自动化任务安全启动")
 
     def _on_automation_finished(self):
-        if self.automation_thread is not None:
-            try:
-                self.automation_thread.update_status.disconnect()
-                self.automation_thread.error_occurred.disconnect()
-                self.automation_thread.finished.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            self.automation_thread = None
+        # 使用QTimer延迟清理，确保信号处理完成
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._cleanup_automation_thread)
         self.status_bar.showMessage("自动化运行已完成")
         self.log("自动化任务已完成")
+    
+    def _cleanup_automation_thread(self):
+        """延迟清理自动化线程"""
+        # 确保互斥锁存在
+        if not hasattr(self, '_automation_mutex'):
+            self._automation_mutex = threading.Lock()
+        
+        with self._automation_mutex:
+            if self.automation_thread is not None:
+                thread = self.automation_thread
+                try:
+                    thread.update_status.disconnect()
+                    thread.error_occurred.disconnect()
+                    thread.finished.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                self.automation_thread = None
 
     def handle_automation_error(self, message):
+        # 先记录日志，再停止自动化，避免在停止过程中出现问题
+        self.log(f"错误: {message}")
+        # 使用QTimer延迟停止，避免在信号处理中直接停止线程
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._handle_automation_error_delayed(message))
+    
+    def _handle_automation_error_delayed(self, message):
+        """延迟处理自动化错误"""
         self.stop_automation()
         QMessageBox.critical(self, "运行错误", message)
-        self.log(f"错误: {message}")
 
     def stop_automation(self):
-        if self.automation_thread and self.automation_thread.isRunning():
-            self.automation_thread.safe_stop()
-        self.automation_thread = None
+        # 确保互斥锁存在
+        if not hasattr(self, '_automation_mutex'):
+            self._automation_mutex = threading.Lock()
+        
+        # 先标记停止状态，防止其他操作
         self.running = False
+        
+        # 清空待处理的数据包
+        if hasattr(self, '_pending_pid_packets'):
+            self._pending_pid_packets.clear()
+        
+        # 停止 PID 更新定时器
+        try:
+            if hasattr(self, 'pid_update_timer') and self.pid_update_timer.isActive():
+                self.pid_update_timer.stop()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 停止 PID 分析器中的所有活动记录
+        try:
+            if hasattr(self, 'pid_analyzer') and self.pid_analyzer is not None:
+                self.pid_analyzer.stop_all()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 重置状态面板
+        try:
+            if hasattr(self, 'pid_stats_panel') and self.pid_stats_panel is not None:
+                self.pid_stats_panel.reset_all()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 先断开自动化线程的信号连接（在锁外）
+        thread = None
+        if self.automation_thread is not None:
+            thread = self.automation_thread
+            self.automation_thread = None  # 先置空，防止重入
+            
+            # 断开信号连接
+            try:
+                thread.update_status.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                thread.error_occurred.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                thread.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        
+        # 停止线程（在锁外，避免死锁）
+        if thread is not None and thread.isRunning():
+            thread.safe_stop()
+            # 等待线程完全结束，最多等待2秒
+            if not thread.wait(2000):
+                self.log("警告: 自动化线程未能在2秒内停止")
+        
+        # 发送停止指令给下位机（停止所有电机和 PID 模式）
+        try:
+            if self.serial_port and self.serial_port.is_open:
+                # 先停止 PID 定位模式
+                self.send_command("PIDSTOP\r\n")
+                # 再停止传统开环模式
+                stop_cmd = "XDFV0J0YDFV0J0ZDFV0J0ADFV0J0\r\n"
+                self.send_command(stop_cmd)
+        except Exception as e:
+            self.log(f"发送停止指令失败: {e}")
+        
         self.log("自动化运行已停止")
         self.status_bar.showMessage("自动化运行已停止")
 
@@ -2245,11 +3304,13 @@ class MotorControlApp(QMainWindow):
             if cfg.get("enable") == "E":
                 desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
                 params_desc.append(desc)
-        params_str = " | ".join(params_desc) if params_desc else "所有电机脱机"
+        params_str = " | ".join(params_desc) if params_desc else "所有微泵脱机"
         item.setText(0, str(idx))
         item.setText(1, step.get("name", f"步骤 {idx}"))
         item.setText(2, params_str)
-        item.setText(3, str(step.get("interval", 0)))
+        # 显示为秒
+        interval_ms = step.get("interval", 0)
+        item.setText(3, f"{interval_ms / 1000.0:.1f}")
         item.setData(0, Qt.UserRole, step)
 
     def save_manual_preset(self):
@@ -2314,34 +3375,37 @@ class MotorControlApp(QMainWindow):
     # =================================================================
     def save_settings(self):
         """将当前UI设置保存到JSON文件。"""
-        settings = {
-            "serial": {
-                "port": self.port_combo.currentText(),
-                "baudrate": self.baud_combo.currentText()
-            },
-            "window": {
-                "width": self.size().width(),
-                "height": self.size().height()
-            },
-            "calibration": {
-                "enabled": self.auto_cal_switch.isChecked(),
-                "amplitude": self.calibration_amp_input.text()
-            }
-        }
+        # 使用settings_manager的内部设置，确保保留motor配置
+        # 先重新加载文件以获取最新的motor配置
+        self.settings_manager.load()
+        
+        # 更新UI相关设置到settings_manager
+        self.settings_manager.set_section("serial", {
+            "port": self.port_combo.currentText(),
+            "baudrate": self.baud_combo.currentText()
+        })
+        self.settings_manager.set_section("window", {
+            "width": self.size().width(),
+            "height": self.size().height()
+        })
+        self.settings_manager.set_section("calibration", {
+            "enabled": self.auto_cal_switch.isChecked(),
+            "amplitude": self.calibration_amp_input.text()
+        })
+        
         # 仅当光谱仪库可用时才保存相关设置
         if NIDAQMX_AVAILABLE:
-            settings["spectrometer"] = {
+            self.settings_manager.set_section("spectrometer", {
                 "device": self.spectro_device_combo.currentText(),
                 "channel": self.spectro_channel_combo.currentText(),
                 "rate": self.spectro_rate_spin.value()
-            }
+            })
 
-        try:
-            with open(self.settings_file, 'w') as f:
-                json.dump(settings, f, indent=4)
+        # 使用settings_manager保存，确保所有配置（包括motor）都被保存
+        if self.settings_manager.save():
             self.log("设置已成功保存。")
-        except Exception as e:
-            self.log(f"保存设置时出错: {str(e)}")
+        else:
+            self.log("保存设置时出错。")
 
     def load_settings(self):
         """从JSON文件加载UI设置。"""
@@ -2350,7 +3414,7 @@ class MotorControlApp(QMainWindow):
             return
 
         try:
-            with open(self.settings_file, 'r') as f:
+            with open(self.settings_file, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
 
             # 加载串口设置
@@ -2399,6 +3463,11 @@ class MotorControlApp(QMainWindow):
                 if "rate" in spectro_settings:
                     self.spectro_rate_spin.setValue(spectro_settings["rate"])
 
+            # 加载零点偏移量（使用已初始化的settings_manager）
+            self.angle_offsets = self.settings_manager.get_angle_offsets()
+            self._update_offset_labels()  # 更新UI显示
+            self.log(f"零点偏移量已加载: {self.angle_offsets}")
+
             self.log("设置已成功加载。")
         except Exception as e:
             self.log(f"加载设置时出错: {str(e)}。将使用默认值。")
@@ -2424,18 +3493,226 @@ class MotorControlApp(QMainWindow):
         self.log_text.clear()
 
     def closeEvent(self, event):
-        # --- 新增：保存设置 ---
-        self.save_settings()
+        # 设置关闭标志，阻止所有信号处理
+        self._closing = True
+        
+        # --- 保存设置 ---
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        
+        # 停止所有定时器
+        try:
+            if hasattr(self, '_chart_update_timer'):
+                self._chart_update_timer.stop()
+            if hasattr(self, 'pid_update_timer'):
+                self.pid_update_timer.stop()
+            if hasattr(self, 'resize_timer'):
+                self.resize_timer.stop()
+            if hasattr(self, 'spectro_timer'):
+                self.spectro_timer.stop()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 清空数据缓冲区
+        if hasattr(self, '_pending_pid_packets'):
+            self._pending_pid_packets.clear()
 
         # 统一的关闭清理
-        self.stop_automation()
+        try:
+            self.stop_automation()
+        except Exception:
+            pass
+        
         if NIDAQMX_AVAILABLE:
-            self._spectro_stop_measurement()
-        self.close_serial()
+            try:
+                self._spectro_stop_measurement()
+            except Exception:
+                pass
+        
+        try:
+            self.close_serial()
+        except Exception:
+            pass
 
         if platform.system() == 'Windows':
-            windll.winmm.timeEndPeriod(1)
+            try:
+                windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
 
         event.accept()
+
+
+    # ============= 零点标定功能 =============
+    
+    def set_current_as_zero(self, motor: str) -> None:
+        """将当前角度设为零点"""
+        if motor not in self.raw_angles:
+            self.log(f"微泵{motor}原始角度数据不可用")
+            return
+        
+        # 使用原始物理角度作为偏移量
+        offset = self.raw_angles[motor]
+        self.angle_offsets[motor] = offset
+        
+        # 保存到配置
+        self.settings_manager.set_angle_offset(motor, offset)
+        
+        # 立即刷新显示（当前角度变为0）
+        self.current_angles[motor] = 0.0
+        self._update_angle_displays()
+        self._update_offset_labels()
+        
+        # 日志输出
+        self.log(f"微泵{motor}零点已设置: 物理角度={offset:.2f}°")
+    
+    def reset_zero_offsets(self) -> None:
+        """重置所有零点偏移"""
+        self.angle_offsets = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}
+        
+        # 保存到配置
+        self.settings_manager.reset_angle_offsets()
+        
+        # 恢复为原始角度
+        for motor in ["X", "Y", "Z", "A"]:
+            self.current_angles[motor] = self.raw_angles[motor]
+        
+        self._update_angle_displays()
+        self._update_offset_labels()
+        self.log("所有微泵零点已重置")
+    
+    def reset_deviation_data(self) -> None:
+        """重置偏差计算相关数据"""
+        # 重置理论偏差相关
+        self.initial_angle_base = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.accumulated_rotation = {m: 0.0 for m in ["X", "Y", "Z", "A"]}
+        self.theoretical_deviations = {m: None for m in ["X", "Y", "Z", "A"]}
+        self.theoretical_target = {m: None for m in ["X", "Y", "Z", "A"]}
+        
+        # 重置实时偏差相关
+        self.pending_targets = {}
+        self.expected_rotation = {"X": 0, "Y": 0, "Z": 0, "A": 0}
+        self.expected_changes = {}
+        
+        # 构造数据并调用现有方法刷新表格
+        data = {
+            "current": {m: self.current_angles.get(m, 0.0) for m in ["X", "Y", "Z", "A"]},
+            "targets": {m: None for m in ["X", "Y", "Z", "A"]},
+            "theoretical": {m: None for m in ["X", "Y", "Z", "A"]},
+            "realtime": {m: None for m in ["X", "Y", "Z", "A"]}
+        }
+        self.update_angles(data)
+        
+        self.log("偏差数据已重置")
+    
+    def _update_angle_displays(self) -> None:
+        """更新所有角度相关显示"""
+        # 触发现有的角度更新机制
+        current_angles = {m: self.current_angles.get(m, 0.0) for m in ["X", "Y", "Z", "A"]}
+        
+        # 更新电机圆圈动画和角度标签
+        for motor in ["X", "Y", "Z", "A"]:
+            if motor in self.motors:
+                angle = current_angles[motor]
+                self.motors[motor].set_angle(-angle)  # 负号用于顺时针旋转
+            if motor in self.angle_labels:
+                self.angle_labels[motor].setText(f"{current_angles[motor]:.3f}°")
+    
+    def _update_offset_labels(self) -> None:
+        """更新偏移量显示标签"""
+        if not hasattr(self, 'offset_labels'):
+            return
+        
+        for motor in ["X", "Y", "Z", "A"]:
+            offset = self.angle_offsets.get(motor, 0.0)
+            if motor in self.offset_labels:
+                self.offset_labels[motor].setText(f"偏移: {offset:.2f}°")
+                # 偏移量为0时显示灰色，非零时显示蓝色
+                color = "#8e8e93" if offset == 0.0 else "#007aff"
+                self.offset_labels[motor].setStyleSheet(f"color: {color}; font-size: 13px;")
+
+    # ============= 微泵备注功能 =============
+    
+    def show_pump_note_menu(self, motor: str, pos, group=None) -> None:
+        """显示微泵备注右键菜单"""
+        menu = QMenu(self)
+        
+        edit_action = menu.addAction("编辑备注")
+        edit_action.triggered.connect(lambda: self.edit_pump_note(motor))
+        
+        current_note = self.settings_manager.get_pump_note(motor)
+        if current_note:
+            clear_action = menu.addAction("清除备注")
+            clear_action.triggered.connect(lambda: self.clear_pump_note(motor))
+        
+        # 使用传入的group或sender来映射坐标
+        widget = group if group else self.sender()
+        if widget:
+            menu.exec(widget.mapToGlobal(pos))
+    
+    def edit_pump_note(self, motor: str) -> None:
+        """编辑微泵备注"""
+        current_note = self.settings_manager.get_pump_note(motor)
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"微泵 {motor} 备注")
+        dialog.setFixedSize(300, 140)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 输入框
+        note_input = QLineEdit(current_note)
+        note_input.setMaxLength(8)
+        note_input.setPlaceholderText("输入备注(最多8字)")
+        note_input.setFont(QFont("Microsoft YaHei", 14))
+        layout.addWidget(note_input)
+        
+        # 提示
+        hint = QLabel("限制8个字符")
+        hint.setStyleSheet("color: #888; font-size: 12px;")
+        layout.addWidget(hint)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(dialog.accept)
+        clear_btn = QPushButton("清除")
+        clear_btn.clicked.connect(lambda: note_input.clear())
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(clear_btn)
+        layout.addLayout(btn_layout)
+        
+        if dialog.exec() == QDialog.Accepted:
+            new_note = note_input.text().strip()
+            self.settings_manager.set_pump_note(motor, new_note)
+            self.refresh_pump_titles()
+            self.log(f"微泵{motor}备注已更新: {new_note if new_note else '(已清除)'}")
+    
+    def clear_pump_note(self, motor: str) -> None:
+        """清除微泵备注"""
+        self.settings_manager.clear_pump_note(motor)
+        self.refresh_pump_titles()
+        self.log(f"微泵{motor}备注已清除")
+    
+    def refresh_pump_titles(self) -> None:
+        """刷新所有微泵卡片标题"""
+        for motor in ["X", "Y", "Z", "A"]:
+            note = self.settings_manager.get_pump_note(motor)
+            title = f"微泵 {motor} ({note})" if note else f"微泵 {motor}"
+            
+            # 更新转子监控页的卡片标题
+            if hasattr(self, 'position_motor_groups') and motor in self.position_motor_groups:
+                self.position_motor_groups[motor].setTitle(title)
+            
+            # 更新手动控制页的卡片标题
+            if hasattr(self, 'manual_motor_groups') and motor in self.manual_motor_groups:
+                self.manual_motor_groups[motor].setTitle(title)
+    
+    def get_pump_title(self, motor: str) -> str:
+        """获取带备注的微泵标题"""
+        note = self.settings_manager.get_pump_note(motor)
+        return f"微泵 {motor} ({note})" if note else f"微泵 {motor}"
 
 

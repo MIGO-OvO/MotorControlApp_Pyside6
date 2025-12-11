@@ -1,6 +1,5 @@
 """
-运行完整功能重构版本
-包含原始main.py的所有功能，使用重构后的架构
+
 """
 import sys
 import os

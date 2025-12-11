@@ -1,4 +1,4 @@
-"""电机步骤配置对话框"""
+"""微泵步骤配置对话框"""
 import weakref
 from typing import Dict, Any, Optional
 from PySide6.QtWidgets import (
@@ -10,10 +10,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from ...config.constants import MOTOR_NAMES
+from ...config.settings import SettingsManager
 
 
 class MotorStepConfig(QDialog):
-    """电机步骤配置对话框"""
+    """微泵步骤配置对话框"""
     
     def __init__(self, parent, step_num: int, initial_params: Optional[Dict] = None):
         """
@@ -38,6 +39,16 @@ class MotorStepConfig(QDialog):
         layout = QGridLayout()
         self.widgets = {}
         
+        # 获取设置管理器用于读取备注
+        self._settings_manager = None
+        parent_ref = self.parent()
+        if parent_ref and hasattr(parent_ref, 'settings_manager'):
+            self._settings_manager = parent_ref.settings_manager
+        else:
+            # 如果父窗口没有settings_manager，创建一个临时的
+            self._settings_manager = SettingsManager("data/settings.json")
+            self._settings_manager.load()
+        
         # 步骤名称
         name_frame = QFrame()
         hbox = QHBoxLayout(name_frame)
@@ -51,14 +62,17 @@ class MotorStepConfig(QDialog):
         hbox.addWidget(self.name_entry)
         layout.addWidget(name_frame, 0, 0, 1, 2)
         
-        # 电机控制区
+        # 微泵控制区
         for i, motor in enumerate(MOTOR_NAMES):
-            group = QGroupBox(f"电机 {motor}")
+            # 获取备注并生成标题
+            note = self._settings_manager.get_pump_note(motor) if self._settings_manager else ""
+            title = f"微泵 {motor} ({note})" if note else f"微泵 {motor}"
+            group = QGroupBox(title)
             group.setFont(QFont("Microsoft YaHei", 13))
             vbox = QVBoxLayout(group)
             
             # 启用开关
-            enable_check = QCheckBox("启用电机")
+            enable_check = QCheckBox("启用微泵")
             enable_check.setFont(QFont("Microsoft YaHei", 16))
             vbox.addWidget(enable_check)
             
@@ -102,7 +116,7 @@ class MotorStepConfig(QDialog):
         # 间隔时间
         interval_frame = QFrame()
         hbox = QHBoxLayout(interval_frame)
-        interval_lbl = QLabel("间隔时间(ms):")
+        interval_lbl = QLabel("间隔时间(s):")
         interval_lbl.setFont(QFont("Microsoft YaHei", 16))
         self.interval_entry = QLineEdit()
         self.interval_entry.setFont(QFont("Microsoft YaHei", 16))
@@ -138,7 +152,9 @@ class MotorStepConfig(QDialog):
                     widgets["direction"].buttons()[1].setChecked(True)
                 widgets["speed"].setText(params.get("speed", ""))
                 widgets["angle"].setText(params.get("angle", ""))
-            self.interval_entry.setText(str(self.step_params.get("interval", 0)))
+            # 转换为秒显示
+            interval_ms = self.step_params.get("interval", 0)
+            self.interval_entry.setText(str(interval_ms / 1000.0))
     
     def save_params(self):
         """保存参数"""
@@ -168,7 +184,8 @@ class MotorStepConfig(QDialog):
                 }
             
             interval_text = self.interval_entry.text().strip()
-            params["interval"] = 5000 if not interval_text else int(interval_text)
+            # 转换为毫秒保存
+            params["interval"] = 5000 if not interval_text else int(float(interval_text) * 1000)
             
             self.step_params = params
             self.accept()

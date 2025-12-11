@@ -162,4 +162,80 @@ class SettingsManager:
             return False
         except (KeyError, TypeError):
             return False
+    
+    def get_angle_offsets(self) -> Dict[str, float]:
+        """
+        获取所有电机的零点偏移量
+        
+        Returns:
+            电机名称到偏移量的字典
+        """
+        offsets = self.get("motor.angle_offsets", {})
+        # 确保所有电机都有默认值
+        return {motor: offsets.get(motor, 0.0) for motor in ["X", "Y", "Z", "A"]}
+    
+    def set_angle_offset(self, motor: str, offset: float) -> None:
+        """
+        设置单个电机的零点偏移量
+        
+        Args:
+            motor: 电机名称 (X/Y/Z/A)
+            offset: 偏移量（度）
+        """
+        current_offsets = self.get("motor.angle_offsets", {})
+        current_offsets[motor] = offset
+        self.set("motor.angle_offsets", current_offsets)
+        self.save()
+    
+    def reset_angle_offsets(self) -> None:
+        """重置所有零点偏移量为0"""
+        self.set("motor.angle_offsets", {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0})
+        self.save()
+
+    # ==================== 微泵备注管理 ====================
+    
+    def get_pump_note(self, motor: str) -> str:
+        """
+        获取微泵备注
+        
+        Args:
+            motor: 电机名称 (X/Y/Z/A)
+            
+        Returns:
+            备注字符串，无备注时返回空字符串
+        """
+        return self.get(f"motor.pump_notes.{motor}", "")
+    
+    def set_pump_note(self, motor: str, note: str) -> None:
+        """
+        设置微泵备注，限制8字符
+        
+        Args:
+            motor: 电机名称 (X/Y/Z/A)
+            note: 备注内容
+        """
+        note = note[:8] if note else ""
+        current_notes = self.get("motor.pump_notes", {})
+        current_notes[motor] = note
+        self.set("motor.pump_notes", current_notes)
+        self.save()
+    
+    def clear_pump_note(self, motor: str) -> None:
+        """
+        清除微泵备注
+        
+        Args:
+            motor: 电机名称 (X/Y/Z/A)
+        """
+        self.set_pump_note(motor, "")
+    
+    def get_all_pump_notes(self) -> Dict[str, str]:
+        """
+        获取所有微泵备注
+        
+        Returns:
+            电机名称到备注的字典
+        """
+        notes = self.get("motor.pump_notes", {})
+        return {motor: notes.get(motor, "") for motor in ["X", "Y", "Z", "A"]}
 

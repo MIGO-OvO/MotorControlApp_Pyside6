@@ -14,21 +14,22 @@ class MotorCircle(QWidget):
         self.target_angle = 0
         self.setFixedSize(150, 150)
         
-        # 动画
-        self.animation = QPropertyAnimation(self, b"angle")
-        self.animation.setDuration(1000)
-        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        # 禁用动画以提高性能（高频更新时动画会导致卡顿）
+        self._use_animation = False
+        self._last_update_time = 0
+        self._update_interval = 0.05  # 最小更新间隔50ms (20Hz)
     
     def set_angle(self, angle: float):
-        """设置角度"""
+        """设置角度 - 优化版本，带节流"""
+        import time
         self.target_angle = angle
-        if hasattr(self, 'animation'):
-            self.animation.stop()
-            self.animation.setStartValue(self._angle)
-            self.animation.setEndValue(angle)
-            self.animation.start()
         self._angle = angle
-        self.update()
+        
+        # 节流：限制UI更新频率
+        current_time = time.time()
+        if current_time - self._last_update_time >= self._update_interval:
+            self._last_update_time = current_time
+            self.update()
     
     def get_angle(self) -> float:
         """获取角度"""

@@ -12,12 +12,17 @@ class AnalysisChart(QChart):
         super().__init__()
         self.series = {}
         self.markers = {}
+        # 减小数据缓冲区大小，提高性能
         self.data = {
-            "X": deque(maxlen=10000),
-            "Y": deque(maxlen=10000),
-            "Z": deque(maxlen=10000),
-            "A": deque(maxlen=10000)
+            "X": deque(maxlen=500),
+            "Y": deque(maxlen=500),
+            "Z": deque(maxlen=500),
+            "A": deque(maxlen=500)
         }
+        # 缓存Y轴范围，避免频繁计算
+        self._y_min = -5
+        self._y_max = 5
+        self._update_count = 0
         self.init_chart()
         self.setup_axes()
         self.auto_scale_margin = 0.1  # 10%的边距
@@ -112,53 +117,85 @@ class AnalysisChart(QChart):
         self.axisY.applyNiceNumbers()
     
     def update_data(self, deviations):
-        """只更新启用电机的数据"""
-        # 获取当前活动电机
-        parent = self.parent()
-        active_motors = parent.active_motors if hasattr(parent, 'active_motors') else ["X", "Y", "Z", "A"]
-        
-        # 过滤数据
-        valid_data = {
-            k: round(v, 3)
-            for k, v in deviations.get("theoretical", {}).items()
-            if v is not None and k in self.data and k in active_motors
-        }
-        
-        # 更新数据存储
-        for motor, dev in valid_data.items():
-            self.data[motor].append(dev)
-            points = [QPointF(x, y) for x, y in enumerate(self.data[motor])]
-            self.series[motor].replace(points[-100:])
+        """只更新启用电机的数据 - 优化版本"""
+        try:
+            # 获取当前活动电机
+            parent = self.parent()
+            active_motors = parent.active_motors if hasattr(parent, 'active_motors') else ["X", "Y", "Z", "A"]
             
-            # 更新标记点
-            if points:
-                marker_point = [points[-1]]
-                self.markers[motor].replace(marker_point)
-        
-        # 智能坐标轴调整
-        self.auto_scale_axes()
+            # 过滤数据
+            valid_data = {
+                k: round(v, 3)
+                for k, v in deviations.get("theoretical", {}).items()
+                if v is not None and k in self.data and k in active_motors
+            }
+            
+            if not valid_data:
+                return
+            
+            # 更新数据存储
+            for motor, dev in valid_data.items():
+                self.data[motor].append(dev)
+                
+                # 更新Y轴范围缓存
+                if dev < self._y_min:
+                    self._y_min = dev
+                if dev > self._y_max:
+                    self._y_max = dev
+            
+            # 每5次更新才刷新图表曲线（降低刷新频率）
+            self._update_count += 1
+            if self._update_count >= 5:
+                self._update_count = 0
+                self._refresh_series(valid_data.keys())
+        except Exception as e:
+            print(f"AnalysisChart update_data error: {e}")
+    
+    def _refresh_series(self, motors):
+        """刷新指定电机的曲线"""
+        try:
+            for motor in motors:
+                if motor not in self.data:
+                    continue
+                data_list = list(self.data[motor])
+                if not data_list:
+                    continue
+                
+                # 只显示最近100个点
+                display_data = data_list[-100:]
+                start_idx = max(0, len(data_list) - 100)
+                points = [QPointF(start_idx + i, y) for i, y in enumerate(display_data)]
+                
+                self.series[motor].replace(points)
+                
+                # 更新标记点
+                if points:
+                    self.markers[motor].replace([points[-1]])
+            
+            # 更新坐标轴
+            self._update_axes()
+        except Exception as e:
+            print(f"_refresh_series error: {e}")
+    
+    def _update_axes(self):
+        """更新坐标轴范围"""
+        try:
+            # Y轴使用缓存的范围
+            y_range = self._y_max - self._y_min
+            margin = max(y_range * self.auto_scale_margin, 0.5)
+            self.axisY.setRange(self._y_min - margin, self._y_max + margin)
+            
+            # X轴
+            max_length = max((len(d) for d in self.data.values()), default=0)
+            if max_length > 0:
+                start = max(0, max_length - 100)
+                self.axisX.setRange(start, max(max_length, start + 100))
+        except Exception:
+            pass
     
     def auto_scale_axes(self):
-        """智能坐标轴缩放算法"""
-        # Y轴缩放
-        y_values = [y for d in self.data.values() for y in d]
-        if y_values:
-            y_min = min(y_values)
-            y_max = max(y_values)
-            y_range = y_max - y_min
-            margin = y_range * self.auto_scale_margin if y_range != 0 else 1
-            self.axisY.setRange(y_min - margin, y_max + margin)
-        else:
-            self.axisY.setRange(-5, 5)
-        
-        # X轴智能缩放
-        max_length = max(len(d) for d in self.data.values())
-        if max_length > 0:
-            visible_points = 100
-            start = max(0, max_length - visible_points)
-            self.axisX.setRange(start, max_length)
-        else:
-            self.axisX.setRange(0, 100)
+        """智能坐标轴缩放算法 - 使用缓存值"""
+        self._update_axes()
     
     def clear(self):
         """清空所有数据"""
@@ -166,6 +203,10 @@ class AnalysisChart(QChart):
             self.data[motor].clear()
             self.series[motor].replace([])
             self.markers[motor].replace([])
+        # 重置Y轴范围缓存
+        self._y_min = -5
+        self._y_max = 5
+        self._update_count = 0
         self.setup_axes()
         self.update()
     

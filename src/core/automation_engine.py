@@ -1,12 +1,13 @@
 """
 自动化执行引擎
 负责自动化流程的执行、暂停、恢复和停止
+支持等待 PID 完成后再开始计时间隔
 """
 import json
 import time
 import threading
 import weakref
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import serial
 from PySide6.QtCore import QThread, Signal
 
@@ -18,6 +19,9 @@ class AutomationThread(QThread):
     error_occurred = Signal(str)  # 错误发生信号
     finished = Signal()  # 完成信号
     progress_updated = Signal(int)  # 进度更新信号
+    
+    # PID 等待超时时间（秒）
+    PID_WAIT_TIMEOUT = 60.0
     
     def __init__(
         self,
@@ -49,6 +53,10 @@ class AutomationThread(QThread):
         self._paused = threading.Event()
         self._current_step = 0
         self._current_loop = 1
+        
+        # PID 完成等待机制
+        self._pid_complete_event = threading.Event()
+        self._pending_pid_motors: Set[str] = set()  # 等待完成的 PID 电机
     
     def _deep_copy_steps(self, steps: List[Dict]) -> List[Dict]:
         """
@@ -116,9 +124,92 @@ class AutomationThread(QThread):
             if not self._send_step_command(step):
                 break
             
+            # 检查是否开启 PID 模式，如果是则等待 PID 完成后再计时
+            if self._is_pid_mode_enabled():
+                pid_motors = self._get_step_active_motors(step)
+                if pid_motors:
+                    self._pending_pid_motors = pid_motors.copy()
+                    self._pid_complete_event.clear()
+                    
+                    if not self._wait_for_pid_complete():
+                        if self._running.is_set():
+                            self.update_status.emit(f"步骤 {step_idx + 1} PID 等待超时")
+                        break
+            
+            # PID 完成后（或非 PID 模式）开始计时间隔
             self._wait_interval(step.get("interval", 0))
         
         self._current_loop += 1
+    
+    def _is_pid_mode_enabled(self) -> bool:
+        """
+        检查主窗口是否开启了 PID 模式
+        
+        Returns:
+            True: PID 模式已开启
+            False: PID 模式未开启或无法获取状态
+        """
+        parent = self.parent_ref()
+        if not parent:
+            return False
+        return getattr(parent, 'auto_calibration_enabled', False)
+    
+    def _get_step_active_motors(self, step: Dict[str, Any]) -> Set[str]:
+        """
+        获取步骤中启用的非连续模式电机
+        
+        Args:
+            step: 步骤参数
+            
+        Returns:
+            启用的电机集合（排除连续模式）
+        """
+        active_motors = set()
+        for motor in ["X", "Y", "Z", "A"]:
+            motor_cfg = step.get(motor, {})
+            if (motor_cfg.get("enable") == "E" and 
+                not motor_cfg.get("continuous", False)):
+                active_motors.add(motor)
+        return active_motors
+    
+    def _wait_for_pid_complete(self) -> bool:
+        """
+        等待所有 PID 电机完成
+        
+        Returns:
+            True: 所有 PID 完成
+            False: 超时或被中断
+        """
+        start_time = time.time()
+        
+        while self._running.is_set() and self._pending_pid_motors:
+            # 检查暂停
+            while self._paused.is_set() and self._running.is_set():
+                time.sleep(0.1)
+            
+            # 检查超时
+            if time.time() - start_time > self.PID_WAIT_TIMEOUT:
+                self.error_occurred.emit(
+                    f"PID 等待超时 ({self.PID_WAIT_TIMEOUT}s)，未完成电机: {self._pending_pid_motors}"
+                )
+                return False
+            
+            # 等待 PID 完成事件或超时
+            self._pid_complete_event.wait(timeout=0.1)
+            self._pid_complete_event.clear()
+        
+        return self._running.is_set()
+    
+    def notify_pid_complete(self, motor: str) -> None:
+        """
+        通知 PID 完成（由主窗口调用）
+        
+        Args:
+            motor: 完成的电机名称
+        """
+        if motor in self._pending_pid_motors:
+            self._pending_pid_motors.discard(motor)
+            self._pid_complete_event.set()
     
     def _send_step_command(self, step: Dict[str, Any]) -> bool:
         """
@@ -135,31 +226,58 @@ class AutomationThread(QThread):
         
         try:
             parent = self.parent_ref()
-            if not parent or not self.serial_port:
+            if not parent:
                 return False
             
-            command = parent.generate_command(step)
+            # 检查串口状态
+            if not self.serial_port or not self.serial_port.is_open:
+                self.error_occurred.emit("串口连接已断开")
+                return False
+            
+            # 生成指令（可能涉及 GUI 状态访问）
+            try:
+                command = parent.generate_command(step)
+            except Exception as e:
+                self.error_occurred.emit(f"生成指令失败: {str(e)}")
+                return False
+            
+            if not command:
+                return True  # 空指令视为成功
             
             if not self._running.is_set():
                 return False
             
-            with self.lock:
-                if not self._running.is_set():
-                    return False
-                
-                if not self.serial_port.is_open:
-                    self.error_occurred.emit("串口连接已断开")
-                    return False
-                
-                try:
+            # 发送指令
+            try:
+                with self.lock:
+                    if not self._running.is_set():
+                        return False
+                    
+                    if not self.serial_port.is_open:
+                        self.error_occurred.emit("串口连接已断开")
+                        return False
+                    
                     self.serial_port.write(command.encode('utf-8'))
                     self.serial_port.flush()
+                
+                # 日志记录放在锁外，避免死锁
+                try:
                     parent.log(f"指令已发送: {command.strip()}")
-                    return True
-                except (serial.SerialException, OSError) as e:
-                    self.error_occurred.emit(f"指令发送失败: {str(e)}")
-                    return False
+                except Exception:
+                    pass  # 日志失败不影响主流程
                     
+                return True
+                
+            except (serial.SerialException, OSError) as e:
+                self.error_occurred.emit(f"指令发送失败: {str(e)}")
+                return False
+                    
+        except RuntimeError as e:
+            # 捕获 Qt 对象已删除的错误
+            if "deleted" in str(e).lower() or "C++ object" in str(e):
+                return False
+            self.error_occurred.emit(f"运行时错误: {str(e)}")
+            return False
         except Exception as e:
             self.error_occurred.emit(f"发送指令异常: {str(e)}")
             return False
@@ -215,8 +333,11 @@ class AutomationThread(QThread):
             with self.lock:
                 if self.serial_port and self.serial_port.is_open:
                     try:
-                        # 发送紧急停止指令
-                        stop_cmd = b"XDFV0J0 YDFV0J0 ZDFV0J0 ADFV0J0\r\n"
+                        # 先停止 PID 定位模式
+                        self.serial_port.write(b"PIDSTOP\r\n")
+                        self.serial_port.flush()
+                        # 再发送紧急停止指令
+                        stop_cmd = b"XDFV0J0YDFV0J0ZDFV0J0ADFV0J0\r\n"
                         self.serial_port.write(stop_cmd)
                         self.serial_port.flush()
                     except Exception:
@@ -233,7 +354,11 @@ class AutomationThread(QThread):
             with self.lock:
                 if self.serial_port and self.serial_port.is_open:
                     try:
-                        stop_cmd = b"XDFV0J0 YDFV0J0 ZDFV0J0 ADFV0J0\r\n"
+                        # 先停止 PID 定位模式
+                        self.serial_port.write(b"PIDSTOP\r\n")
+                        self.serial_port.flush()
+                        # 再发送紧急停止指令
+                        stop_cmd = b"XDFV0J0YDFV0J0ZDFV0J0ADFV0J0\r\n"
                         self.serial_port.write(stop_cmd)
                         self.serial_port.flush()
                     except Exception:

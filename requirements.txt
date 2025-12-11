@@ -5,11 +5,15 @@ numpy>=1.24.0
 
 # 数据处理与分析
 pandas>=2.0.0
+openpyxl>=3.1.0
 
 # 可选依赖 - 光谱仪功能
 nidaqmx>=0.6.5
 pyqtgraph>=0.13.0
 scipy>=1.10.0
+
+# PID优化 - 贝叶斯优化
+scikit-optimize>=0.9.0
 
 # 开发依赖（可选）
 pytest>=7.4.0
