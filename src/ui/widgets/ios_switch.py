@@ -1,14 +1,16 @@
 """iOS风格开关控件"""
+
 from PySide6.QtWidgets import QCheckBox
 
 
 class IOSSwitch(QCheckBox):
     """iOS风格的开关控件"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(60, 30)
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QCheckBox {
                 background-color: #e5e5e5;
                 border-radius: 15px;
@@ -26,5 +28,5 @@ class IOSSwitch(QCheckBox):
                 image: none;
                 margin-left: 30px;
             }
-        """)
-
+        """
+        )
