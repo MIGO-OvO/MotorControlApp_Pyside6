@@ -2,6 +2,7 @@
 全局常量配置
 包含样式表、默认值、硬件配置等
 """
+
 from typing import Dict, List
 
 # ==================== 应用信息 ====================
@@ -18,7 +19,7 @@ MAX_DATA_POINTS = 10000  # 图表最大数据点数
 # ==================== 串口配置 ====================
 DEFAULT_PORT = "COM4"
 DEFAULT_BAUDRATE = 115200
-AVAILABLE_BAUDRATES: List[str] = ['9600', '19200', '38400', '57600', '115200']
+AVAILABLE_BAUDRATES: List[str] = ["9600", "19200", "38400", "57600", "115200"]
 SERIAL_TIMEOUT = 1  # 秒
 WRITE_TIMEOUT = 1  # 秒
 
@@ -342,14 +343,11 @@ CHART_COLORS: Dict[str, str] = {
     "X": "#1f77b4",  # 蓝色
     "Y": "#2ca02c",  # 绿色
     "Z": "#d62728",  # 红色
-    "A": "#9467bd"   # 紫色
+    "A": "#9467bd",  # 紫色
 }
 
 # ==================== 偏差阈值 ====================
-DEVIATION_THRESHOLDS = {
-    "warning": 2.0,   # 橙色警告阈值
-    "critical": 5.0   # 红色严重阈值
-}
+DEVIATION_THRESHOLDS = {"warning": 2.0, "critical": 5.0}  # 橙色警告阈值  # 红色严重阈值
 
 # ==================== 指令格式 ====================
 COMMAND_TERMINATOR = "\r\n"
@@ -357,12 +355,8 @@ ANGLE_REQUEST_COMMAND = "GETANGLE"
 ANGLE_RESPONSE_PREFIX = "ANGLE"
 
 # ==================== 方向映射 ====================
-DIRECTION_MAP = {
-    "F": 1,   # 正转
-    "B": -1   # 反转
-}
+DIRECTION_MAP = {"F": 1, "B": -1}  # 正转  # 反转
 
 # ==================== 日志配置 ====================
 LOG_TIME_FORMAT = "%H:%M:%S.%f"
 LOG_DATE_FORMAT = "%Y%m%d_%H%M%S"
-

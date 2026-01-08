@@ -1,5 +1,6 @@
 """
-
+电机控制系统入口
+Motor Control System Entry Point
 """
 import sys
 import os
@@ -37,35 +38,41 @@ QApplication.setHighDpiScaleFactorRoundingPolicy(
     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
 )
 
-# 创建应用程序
-app = QApplication(sys.argv)
-app.setApplicationName("电机控制系统")
-app.setApplicationVersion("2.0.0 (完整功能重构版)")
 
-# 导入完整功能主窗口
-from src.ui.main_window_complete import MotorControlApp
-from src.config.constants import MACOS_STYLE
+def main():
+    """应用程序主入口"""
+    # 创建应用程序
+    app = QApplication(sys.argv)
+    app.setApplicationName("电机控制系统")
+    app.setApplicationVersion("2.0.0")
 
-try:
-    app.setWindowIcon(QIcon('resources/icons/meow.ico'))
-except:
-    pass
+    # 导入完整功能主窗口
+    from src.ui.main_window_complete import MotorControlApp
+    from src.config.constants import MACOS_STYLE
 
-app.setStyleSheet(MACOS_STYLE)
-
-# 创建并显示主窗口
-window = MotorControlApp()
-window.show()
-
-# 运行
-exit_code = app.exec()
-
-# 清理
-if platform.system() == 'Windows':
     try:
-        ctypes.windll.winmm.timeEndPeriod(1)
+        app.setWindowIcon(QIcon('resources/icons/meow.ico'))
     except:
         pass
 
-sys.exit(exit_code)
+    app.setStyleSheet(MACOS_STYLE)
 
+    # 创建并显示主窗口
+    window = MotorControlApp()
+    window.show()
+
+    # 运行
+    exit_code = app.exec()
+
+    # 清理
+    if platform.system() == 'Windows':
+        try:
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except:
+            pass
+
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

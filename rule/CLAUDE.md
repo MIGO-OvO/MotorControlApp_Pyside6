@@ -58,10 +58,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with Py
 - **环境管理：** 
   ```bash
   # 创建虚拟环境
-  python -m venv venv
+  python -m venv .venv
   # 激活虚拟环境
-  source venv/bin/activate  # Linux/macOS
-  .\venv\Scripts\activate   # Windows
+  source .venv/bin/activate  # Linux/macOS
+  .\.venv\Scripts\activate   # Windows
   ```
 - **依赖管理：** 使用 `requirements.txt` 或 `pyproject.toml` 管理项目依赖
 - **环境隔离：** 严禁在全局环境中安装项目依赖
@@ -77,11 +77,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with Py
 ### 环境管理
 ```bash
 # 创建虚拟环境
-python -m venv venv
+python -m venv .venv
 
 # 激活虚拟环境
-source venv/bin/activate  # Linux/macOS
-.\venv\Scripts\activate   # Windows
+source .venv/bin/activate  # Linux/macOS
+.\.venv\Scripts\activate   # Windows
 
 # 安装依赖
 pip install -r requirements.txt
