@@ -36,8 +36,40 @@ MAX_CALIBRATION_ATTEMPTS = 3  # 最大校准尝试次数
 DEFAULT_CALIBRATION_AMPLITUDE = 1.0  # 默认校准幅值
 
 # ==================== 光谱仪配置 ====================
-DEFAULT_SAMPLE_RATE = 100  # Hz
+DEFAULT_SAMPLE_RATE = 90  # SPS (ADS122C04 默认采样率)
 MAX_SPECTRO_DATA_POINTS = 500
+
+# ADS122C04 支持的采样率列表 (Normal mode)
+ADS_SUPPORTED_RATES = [20, 45, 90, 175, 330, 600, 1000]
+# ADS122C04 Turbo mode 采样率列表
+ADS_TURBO_RATES = [40, 90, 180, 350, 660, 1200, 2000]
+
+# 默认 I2C 通道映射
+DEFAULT_I2C_MAPPING = {
+    "angles": {"X": 0, "Y": 3, "Z": 4, "A": 7},
+    "spectro_channel": 2,
+}
+
+# 默认 ADS122C04 配置
+DEFAULT_ADS_CONFIG = {
+    "ads_address": "0x40",
+    "ain": "AIN0",
+    "vref": "AVDD",
+    "gain": 1,
+    "pga_bypass": True,
+    "mode": "continuous",
+    "adc_rate": 90,
+    "publish_rate": 50,
+}
+
+# ADS 参考源选项
+ADS_VREF_OPTIONS = ["AVDD", "INT_2V048"]
+# ADS 增益选项 (PGA旁路模式下)
+ADS_GAIN_OPTIONS = [1, 2, 4]
+# ADS AIN 输入选项
+ADS_AIN_OPTIONS = ["AIN0", "AIN1", "AIN2", "AIN3"]
+# 串口上传频率范围
+ADS_PUBLISH_RATE_RANGE = (1, 200)
 
 # ==================== 文件路径 ====================
 PRESETS_FILE = "data/presets.json"

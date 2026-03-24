@@ -163,6 +163,12 @@ class AutomationMixin:
                 if cfg.get("enable") == "E":
                     desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
                     params_desc.append(desc)
+
+            # 添加进样泵信息
+            pump_cfg = step.get("pump", {})
+            if pump_cfg.get("enable", False):
+                params_desc.append(f"进样泵:{pump_cfg.get('speed', 0)}%")
+
             params_str = " | ".join(params_desc) if params_desc else "所有微泵脱机"
             interval_ms = step.get("interval", 0)
             name = step.get("name", f"步骤 {idx}")
@@ -361,6 +367,11 @@ class AutomationMixin:
             if cfg.get("enable") == "E":
                 desc = f"{motor}:{cfg.get('direction', '?')}{cfg.get('speed', '?')}°"
                 params_desc.append(desc)
+
+        # 添加进样泵信息
+        pump_cfg = step.get("pump", {})
+        if pump_cfg.get("enable", False):
+            params_desc.append(f"进样泵:{pump_cfg.get('speed', 0)}%")
 
         item.setText(0, str(idx))
         item.setText(1, step.get("name", f"步骤 {idx}"))

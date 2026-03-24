@@ -337,6 +337,9 @@ class AutomationThread(QThread):
             with self.lock:
                 if self.serial_port and self.serial_port.is_open:
                     try:
+                        # 停止进样泵
+                        self.serial_port.write(b"PUMP:OFF\r\n")
+                        self.serial_port.flush()
                         # 先停止 PID 定位模式
                         self.serial_port.write(b"PIDSTOP\r\n")
                         self.serial_port.flush()
@@ -358,6 +361,9 @@ class AutomationThread(QThread):
             with self.lock:
                 if self.serial_port and self.serial_port.is_open:
                     try:
+                        # 停止进样泵
+                        self.serial_port.write(b"PUMP:OFF\r\n")
+                        self.serial_port.flush()
                         # 先停止 PID 定位模式
                         self.serial_port.write(b"PIDSTOP\r\n")
                         self.serial_port.flush()

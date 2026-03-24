@@ -15,6 +15,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -24,9 +25,11 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
+from src.config.constants import DEFAULT_I2C_MAPPING
 from src.ui.widgets import IOSSwitch, MotorCircle
 
 
@@ -178,7 +181,68 @@ class PositionMixin:
 
         layout.addWidget(btn_frame)
 
-    def start_calibration(self):
+        # ============= I2C 通道映射 =============
+        self._create_i2c_mapping_group(layout)
+
+    def _create_i2c_mapping_group(self, parent_layout) -> None:
+        """创建 I2C 通道映射配置组。"""
+        group = QGroupBox("I2C 通道映射 (TCA9548A)")
+        group.setFont(QFont("Microsoft YaHei", 11))
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        defaults = DEFAULT_I2C_MAPPING
+        angles = defaults.get("angles", {"X": 0, "Y": 3, "Z": 4, "A": 7})
+        spec_ch = defaults.get("spectro_channel", 2)
+
+        self.i2c_map_spins = {}
+        for motor in ["X", "Y", "Z", "A"]:
+            spin = QSpinBox()
+            spin.setRange(0, 7)
+            spin.setValue(angles.get(motor, 0))
+            self.i2c_map_spins[motor] = spin
+            form.addRow(f"角度传感器 {motor}:", spin)
+
+        spec_spin = QSpinBox()
+        spec_spin.setRange(0, 7)
+        spec_spin.setValue(spec_ch)
+        self.i2c_map_spins["SPEC"] = spec_spin
+        form.addRow("分光 ADC:", spec_spin)
+
+        btn_row = QHBoxLayout()
+        read_btn = QPushButton("读取下位机配置")
+        read_btn.clicked.connect(self._i2c_read_from_device)
+        apply_btn = QPushButton("应用到下位机")
+        apply_btn.clicked.connect(self._i2c_apply_to_device)
+        btn_row.addWidget(read_btn)
+        btn_row.addWidget(apply_btn)
+
+        vbox = QVBoxLayout(group)
+        vbox.addLayout(form)
+        vbox.addLayout(btn_row)
+        parent_layout.addWidget(group)
+
+    def _i2c_read_from_device(self) -> None:
+        """向下位机查询当前 I2C 通道映射。"""
+        if not self.serial_port or not self.serial_port.is_open:
+            QMessageBox.warning(self, "警告", "请先连接串口")
+            return
+        self.send_command("I2CMAP?\r\n")
+
+    def _i2c_apply_to_device(self) -> None:
+        """将 UI 上的 I2C 通道映射发送给下位机。"""
+        if not self.serial_port or not self.serial_port.is_open:
+            QMessageBox.warning(self, "警告", "请先连接串口")
+            return
+        x = self.i2c_map_spins["X"].value()
+        y = self.i2c_map_spins["Y"].value()
+        z = self.i2c_map_spins["Z"].value()
+        a = self.i2c_map_spins["A"].value()
+        s = self.i2c_map_spins["SPEC"].value()
+        cmd = f"I2CMAP:X={x},Y={y},Z={z},A={a},SPEC={s}\r\n"
+        self.send_command(cmd)
+
+    def start_calibration(self) -> None:
         """开始 PID 闭环校准流程（下位机自主完成）"""
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.warning(self, "警告", "请先连接串口")

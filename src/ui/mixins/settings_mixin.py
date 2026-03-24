@@ -15,12 +15,7 @@ from typing import Dict, Any
 
 from PySide6.QtWidgets import QApplication
 
-# 检查NIDAQMX是否可用
-try:
-    import nidaqmx
-    NIDAQMX_AVAILABLE = True
-except ImportError:
-    NIDAQMX_AVAILABLE = False
+from src.config.constants import DEFAULT_I2C_MAPPING, DEFAULT_ADS_CONFIG
 
 
 class SettingsMixin:
@@ -55,16 +50,26 @@ class SettingsMixin:
             }
         )
 
-        # 仅当光谱仪库可用时才保存相关设置
-        if NIDAQMX_AVAILABLE:
-            self.settings_manager.set_section(
-                "spectrometer",
-                {
-                    "device": self.spectro_device_combo.currentText(),
-                    "channel": self.spectro_channel_combo.currentText(),
-                    "rate": self.spectro_rate_spin.value(),
-                }
-            )
+        # 保存 I2C 通道映射
+        i2c_mapping = dict(DEFAULT_I2C_MAPPING)
+        if hasattr(self, "i2c_map_spins"):
+            angles = {}
+            for motor in ["X", "Y", "Z", "A"]:
+                angles[motor] = self.i2c_map_spins[motor].value()
+            i2c_mapping["angles"] = angles
+            i2c_mapping["spectro_channel"] = self.i2c_map_spins["SPEC"].value()
+        self.settings_manager.set_section("i2c_mapping", i2c_mapping)
+
+        # 保存 ADS122C04 / 分光信号配置
+        spectro_cfg = dict(DEFAULT_ADS_CONFIG)
+        if hasattr(self, "spectro_tca_channel_spin"):
+            spectro_cfg["tca_channel"] = self.spectro_tca_channel_spin.value()
+            spectro_cfg["ads_address"] = self.spectro_ads_addr_combo.currentText()
+            spectro_cfg["vref"] = self.spectro_vref_combo.currentText()
+            spectro_cfg["gain"] = int(self.spectro_gain_combo.currentText())
+            spectro_cfg["adc_rate"] = int(self.spectro_rate_combo.currentText())
+            spectro_cfg["publish_rate"] = self.spectro_publish_spin.value()
+        self.settings_manager.set_section("spectrometer", spectro_cfg)
 
         # 保存 PID 参数设置
         if hasattr(self, 'pid_optimizer_panel'):
@@ -119,31 +124,31 @@ class SettingsMixin:
             if "amplitude" in cal_settings:
                 self.calibration_amp_input.setText(cal_settings["amplitude"])
 
-            # 加载光谱仪设置
-            if NIDAQMX_AVAILABLE:
-                spectro_settings = settings.get("spectrometer", {})
-                if "device" in spectro_settings:
-                    saved_device = spectro_settings["device"]
-                    available_devices = [
-                        self.spectro_device_combo.itemText(i)
-                        for i in range(self.spectro_device_combo.count())
-                    ]
-                    if saved_device in available_devices:
-                        self.spectro_device_combo.setCurrentText(saved_device)
+            # 加载 I2C 通道映射
+            i2c_mapping = settings.get("i2c_mapping", {})
+            if i2c_mapping and hasattr(self, "i2c_map_spins"):
+                angles = i2c_mapping.get("angles", {})
+                for motor in ["X", "Y", "Z", "A"]:
+                    if motor in angles:
+                        self.i2c_map_spins[motor].setValue(angles[motor])
+                spec_ch = i2c_mapping.get("spectro_channel", 2)
+                self.i2c_map_spins["SPEC"].setValue(spec_ch)
 
-                QApplication.processEvents()  # 等待UI响应设备更改
-
-                if "channel" in spectro_settings:
-                    saved_channel = spectro_settings["channel"]
-                    available_channels = [
-                        self.spectro_channel_combo.itemText(i)
-                        for i in range(self.spectro_channel_combo.count())
-                    ]
-                    if saved_channel in available_channels:
-                        self.spectro_channel_combo.setCurrentText(saved_channel)
-
-                if "rate" in spectro_settings:
-                    self.spectro_rate_spin.setValue(spectro_settings["rate"])
+            # 加载 ADS / 分光信号配置
+            spectro_cfg = settings.get("spectrometer", {})
+            if spectro_cfg and hasattr(self, "spectro_tca_channel_spin"):
+                if "tca_channel" in spectro_cfg:
+                    self.spectro_tca_channel_spin.setValue(spectro_cfg["tca_channel"])
+                if "ads_address" in spectro_cfg:
+                    self.spectro_ads_addr_combo.setCurrentText(spectro_cfg["ads_address"])
+                if "vref" in spectro_cfg:
+                    self.spectro_vref_combo.setCurrentText(spectro_cfg["vref"])
+                if "gain" in spectro_cfg:
+                    self.spectro_gain_combo.setCurrentText(str(spectro_cfg["gain"]))
+                if "adc_rate" in spectro_cfg:
+                    self.spectro_rate_combo.setCurrentText(str(spectro_cfg["adc_rate"]))
+                if "publish_rate" in spectro_cfg:
+                    self.spectro_publish_spin.setValue(spectro_cfg["publish_rate"])
 
             # 加载零点偏移量
             self.angle_offsets = self.settings_manager.get_angle_offsets()

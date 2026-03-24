@@ -34,14 +34,10 @@ if platform.system() == "Windows":
 
 # 可选依赖
 try:
-    import nidaqmx
     import pyqtgraph as pg
-    from nidaqmx.constants import TerminalConfiguration
-
-    NIDAQMX_AVAILABLE = True
+    PYQTGRAPH_AVAILABLE = True
 except ImportError:
-    NIDAQMX_AVAILABLE = False
-    nidaqmx = None
+    PYQTGRAPH_AVAILABLE = False
     pg = None
 
 from PySide6.QtCharts import QChartView
@@ -102,7 +98,7 @@ from src.config.settings import SettingsManager
 from src.core.automation_engine import AutomationThread
 from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
 from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
-from src.hardware.daq_thread import DAQThread
+from src.hardware.daq_thread import ADSSession
 from src.hardware.serial_reader import SerialReader
 from src.ui.dialogs.motor_step_config import MotorStepConfig
 
@@ -163,14 +159,7 @@ class MotorControlApp(
         self.settings_manager = SettingsManager(self.settings_file)
         self.settings_manager.load()
 
-        # 初始化光谱仪相关变量
-        if not NIDAQMX_AVAILABLE:
-            QMessageBox.critical(
-                self,
-                "依赖库缺失",
-                "未找到 nidaqmx 或 pyqtgraph 库。\n请运行 'pip install nidaqmx pyqtgraph scipy' 进行安装。\n光谱仪功能将不可用。",
-            )
-
+        # 初始化分光信号相关变量
         self._spectro_init_vars()
 
         # 初始化基础属性
@@ -195,8 +184,8 @@ class MotorControlApp(
         self.init_ui()
         self.update_preset_combos()
         self.setStyleSheet(MACOS_STYLE)
-        self.setMinimumSize(1280, 960)
-        self.resize(1280, 960)
+        self.setMinimumSize(1280, 900)
+        self.resize(1280, 900)
         try:
             self.setWindowIcon(QIcon("resources/icons/meow.ico"))
         except:
@@ -296,11 +285,11 @@ class MotorControlApp(
         self.nav_layout.addWidget(self.motor_status_group)
 
         # ================= 光谱仪控制 =================
-        spectro_control_group = QGroupBox("光谱仪控制")
+        spectro_control_group = QGroupBox("分光信号")
         spectro_control_group.setFont(QFont("Microsoft YaHei", 13))
         spectro_control_layout = QVBoxLayout(spectro_control_group)
 
-        self.spectro_btn = QPushButton("光谱分析")
+        self.spectro_btn = QPushButton("分光采集")
         self.spectro_btn.setCheckable(True)
         self.spectro_btn.setFont(QFont("Microsoft YaHei", 13))
         self.spectro_btn.setFixedHeight(40)
@@ -414,10 +403,6 @@ class MotorControlApp(
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
-
-        # 初始刷新光谱仪设备
-        if NIDAQMX_AVAILABLE:
-            self._spectro_refresh_devices()
 
 
 
@@ -547,6 +532,11 @@ class MotorControlApp(
             self.log(f"角度流: {data}")
             return
 
+        # 进样泵控制响应
+        if data.startswith("PUMP_"):
+            self._handle_pump_message(data)
+            return
+
         # 校准相关消息
         if data.startswith("CAL"):
             self.handle_calibration_message(data)
@@ -565,6 +555,28 @@ class MotorControlApp(
         # 流模式状态（兼容旧版）
         if data.startswith("STREAM"):
             self.log(f"流模式: {data}")
+            return
+
+        # I2C 通道映射响应
+        if data.startswith("I2CMAP_OK"):
+            self.log(f"[I2C映射] 设置成功: {data}")
+            return
+        if data.startswith("I2CMAP_ERR"):
+            self.log(f"[I2C映射] 设置失败: {data}")
+            return
+        if data.startswith("I2CMAP:"):
+            self.log(f"[I2C映射] 当前配置: {data}")
+            return
+
+        # ADS122C04 响应
+        if data.startswith("ADS_OK"):
+            self.log(f"[ADS] {data}")
+            return
+        if data.startswith("ADS_ERR"):
+            self.log(f"[ADS] 错误: {data}")
+            return
+        if data.startswith("ADS_STATUS"):
+            self.log(f"[ADS] 状态: {data}")
             return
 
         # 电机状态消息（调试用）
@@ -622,6 +634,24 @@ class MotorControlApp(
             # 测试错误
             error = data.split(":")[1] if ":" in data else "未知错误"
             self.log(f"[PID测试] 错误: {error}")
+
+    def _handle_pump_message(self, data: str) -> None:
+        """处理进样泵相关的串口响应消息。
+
+        Args:
+            data: 进样泵消息（以PUMP_开头）
+        """
+        if data.startswith("PUMP_OK:"):
+            info = data[8:]
+            self.log(f"[进样泵] {info}")
+        elif data.startswith("PUMP_ERR:"):
+            error = data[9:]
+            self.log(f"[进样泵] 错误: {error}")
+        elif data.startswith("PUMP_STATUS:"):
+            status = data[12:]
+            self.log(f"[进样泵] 状态: {status}")
+        else:
+            self.log(f"[进样泵] {data}")
 
     def update_stats_panel(self, data):
         """更新统计面板（兼容旧版调用）- 已优化，不再直接更新图表"""
@@ -692,6 +722,12 @@ class MotorControlApp(
                 if cfg.get("enable") == "E":
                     desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
                     params_desc.append(desc)
+
+            # 添加进样泵信息
+            pump_cfg = step.get("pump", {})
+            if pump_cfg.get("enable", False):
+                params_desc.append(f"进样泵:{pump_cfg.get('speed', 0)}%")
+
             params_str = " | ".join(params_desc) if params_desc else "所有微泵脱机"
             interval_ms = step.get("interval", 0)
             name = step.get("name", f"步骤 {idx}")
@@ -810,6 +846,24 @@ class MotorControlApp(
         self.active_motors = command_active_motors
         self.is_first_command = False
 
+        # ===== 进样泵控制指令 =====
+        pump_config = step_params.get("pump", {})
+        pump_enabled = pump_config.get("enable", False)
+        pump_speed = pump_config.get("speed", 0)
+
+        if pump_enabled and pump_speed > 0:
+            # 发送进样泵设置+启动指令
+            pump_cmd = f"PUMP:SET:{pump_speed}\r\n"
+            if self.serial_port and self.serial_port.is_open:
+                self.send_command(pump_cmd)
+                self.log(f"进样泵启动，转速: {pump_speed}%")
+        elif not pump_enabled:
+            # 自动模式下：如果步骤中明确禁用进样泵，发送停止指令
+            if self.running_mode == "auto":
+                pump_cmd = "PUMP:OFF\r\n"
+                if self.serial_port and self.serial_port.is_open:
+                    self.send_command(pump_cmd)
+
         # 只有在至少一个电机被启用时才添加回车换行符
         if command:
             return command + "\r\n"
@@ -859,11 +913,10 @@ class MotorControlApp(
         except Exception:
             pass
 
-        if NIDAQMX_AVAILABLE:
-            try:
-                self._spectro_stop_measurement()
-            except Exception:
-                pass
+        try:
+            self._spectro_stop_measurement()
+        except Exception:
+            pass
 
         try:
             self.close_serial()
@@ -878,5 +931,3 @@ class MotorControlApp(
 
         event.accept()
 
-    # ============= 零点标定功能已迁移至 PositionMixin =============
-    # ============= 微泵备注功能已迁移至 PositionMixin =============

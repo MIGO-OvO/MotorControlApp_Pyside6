@@ -5,6 +5,7 @@
 - 0x55 0xAA: PID数据包 (29字节)
 - 0x55 0xBB: PID测试结果包 (18字节)
 - 0x55 0xCC: 角度数据包 (20字节)
+- 0x55 0xDD: 分光数据包 (18字节)
 """
 
 import struct
@@ -22,6 +23,7 @@ class SerialReader(QThread):
     pid_packet_received = Signal(dict)  # PID二进制数据包信号 (0xAA)
     test_result_received = Signal(dict)  # PID测试结果信号 (0xBB)
     angle_packet_received = Signal(dict)  # 角度数据包信号 (0xCC)
+    spectro_packet_received = Signal(dict)  # 分光数据包信号 (0xDD)
 
     # 通用常量
     HEADER1 = 0x55
@@ -31,10 +33,13 @@ class SerialReader(QThread):
     HEADER2_PID = 0xAA  # PID数据包
     HEADER2_TEST = 0xBB  # 测试结果包
     HEADER2_ANGLE = 0xCC  # 角度数据包
+    HEADER2_SPECTRO = 0xDD  # 分光数据包
 
     PACKET_SIZE_PID = 29  # PID数据包大小
     PACKET_SIZE_TEST = 18  # 测试结果包大小
     PACKET_SIZE_ANGLE = 20  # 角度数据包大小
+    # Keep in sync with lowerDevice/src/protocol_packets.h::SpectroDataPacket.
+    PACKET_SIZE_SPECTRO = 18  # 分光数据包大小
 
     def __init__(self, serial_port: serial.Serial):
         super().__init__()
@@ -122,6 +127,8 @@ class SerialReader(QThread):
                     return (i, self.HEADER2_TEST, self.PACKET_SIZE_TEST)
                 elif header2 == self.HEADER2_ANGLE:
                     return (i, self.HEADER2_ANGLE, self.PACKET_SIZE_ANGLE)
+                elif header2 == self.HEADER2_SPECTRO:
+                    return (i, self.HEADER2_SPECTRO, self.PACKET_SIZE_SPECTRO)
         return None
 
     def _validate_packet(self, data: bytes, packet_type: int, packet_size: int) -> bool:
@@ -155,6 +162,13 @@ class SerialReader(QThread):
                 checksum ^= data[i]
             return checksum == data[18]
 
+        elif packet_type == self.HEADER2_SPECTRO:
+            # 分光包: head2(1) + timestamp(4) + channel(1) + status(1) + raw_code(4) + voltage(4) = 15 bytes
+            checksum = 0
+            for i in range(1, 16):
+                checksum ^= data[i]
+            return checksum == data[16]
+
         return False
 
     def _emit_packet(self, data: bytes, packet_type: int):
@@ -166,6 +180,8 @@ class SerialReader(QThread):
                 self._emit_test_result_packet(data)
             elif packet_type == self.HEADER2_ANGLE:
                 self._emit_angle_packet(data)
+            elif packet_type == self.HEADER2_SPECTRO:
+                self._emit_spectro_packet(data)
         except Exception as e:
             print(f"Packet parse error: {e}")
 
@@ -217,6 +233,23 @@ class SerialReader(QThread):
             "A": angles[3],
         }
         self.angle_packet_received.emit(packet)
+
+    def _emit_spectro_packet(self, data: bytes):
+        """解析并发送分光数据包 (0xDD)"""
+        timestamp_ms = struct.unpack("<I", data[2:6])[0]
+        tca_channel = data[6]
+        status = data[7]
+        raw_code = struct.unpack("<i", data[8:12])[0]
+        voltage = struct.unpack("<f", data[12:16])[0]
+
+        packet = {
+            "timestamp_ms": timestamp_ms,
+            "tca_channel": tca_channel,
+            "status": status,
+            "raw_code": raw_code,
+            "voltage": voltage,
+        }
+        self.spectro_packet_received.emit(packet)
 
     def _process_as_text(self, data: bytes):
         """将数据作为文本处理"""

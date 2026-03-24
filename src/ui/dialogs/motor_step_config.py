@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSlider,
+    QSpinBox,
     QVBoxLayout,
 )
 
@@ -41,7 +43,7 @@ class MotorStepConfig(QDialog):
         self.parent = weakref.ref(parent)
         self.step_params = initial_params or {}
         self.setWindowTitle(f"步骤 {step_num} 参数配置")
-        self.setFixedSize(500, 650)
+        self.setFixedSize(500, 780)
         self.setWindowModality(Qt.ApplicationModal)
         self.init_ui()
         self.load_initial_params()
@@ -125,6 +127,43 @@ class MotorStepConfig(QDialog):
 
             layout.addWidget(group, (i // 2) + 1, i % 2)
 
+        # 进样泵控制
+        pump_group = QGroupBox("进样泵控制")
+        pump_group.setFont(QFont("Microsoft YaHei", 13))
+        pump_vbox = QVBoxLayout(pump_group)
+
+        # 启用开关
+        self.pump_enable_check = QCheckBox("启用进样泵")
+        self.pump_enable_check.setFont(QFont("Microsoft YaHei", 16))
+        pump_vbox.addWidget(self.pump_enable_check)
+
+        # 转速设置
+        pump_speed_frame = QFrame()
+        pump_speed_layout = QHBoxLayout(pump_speed_frame)
+        pump_speed_lbl = QLabel("转速:")
+        pump_speed_lbl.setFont(QFont("Microsoft YaHei", 16))
+        pump_speed_layout.addWidget(pump_speed_lbl)
+
+        self.pump_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.pump_speed_slider.setRange(0, 100)
+        self.pump_speed_slider.setValue(50)
+        self.pump_speed_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.pump_speed_slider.setTickInterval(10)
+        self.pump_speed_slider.valueChanged.connect(self._sync_pump_spinbox)
+        pump_speed_layout.addWidget(self.pump_speed_slider)
+
+        self.pump_speed_spinbox = QSpinBox()
+        self.pump_speed_spinbox.setRange(0, 100)
+        self.pump_speed_spinbox.setValue(50)
+        self.pump_speed_spinbox.setSuffix("%")
+        self.pump_speed_spinbox.setFont(QFont("Microsoft YaHei", 16))
+        self.pump_speed_spinbox.setFixedWidth(100)
+        self.pump_speed_spinbox.valueChanged.connect(self._sync_pump_slider)
+        pump_speed_layout.addWidget(self.pump_speed_spinbox)
+
+        pump_vbox.addWidget(pump_speed_frame)
+        layout.addWidget(pump_group, 3, 0, 1, 2)
+
         # 间隔时间
         interval_frame = QFrame()
         hbox = QHBoxLayout(interval_frame)
@@ -135,7 +174,7 @@ class MotorStepConfig(QDialog):
         self.interval_entry.setFixedHeight(40)
         hbox.addWidget(interval_lbl)
         hbox.addWidget(self.interval_entry)
-        layout.addWidget(interval_frame, 3, 0, 1, 2)
+        layout.addWidget(interval_frame, 4, 0, 1, 2)
 
         # 按钮
         btn_frame = QFrame()
@@ -146,7 +185,7 @@ class MotorStepConfig(QDialog):
         confirm_btn.clicked.connect(self.save_params)
         hbox_btn.addWidget(cancel_btn)
         hbox_btn.addWidget(confirm_btn)
-        layout.addWidget(btn_frame, 4, 0, 1, 2)
+        layout.addWidget(btn_frame, 5, 0, 1, 2)
 
         self.setLayout(layout)
 
@@ -164,6 +203,14 @@ class MotorStepConfig(QDialog):
                     widgets["direction"].buttons()[1].setChecked(True)
                 widgets["speed"].setText(params.get("speed", ""))
                 widgets["angle"].setText(params.get("angle", ""))
+
+            # 加载进样泵参数
+            pump_params = self.step_params.get("pump", {})
+            self.pump_enable_check.setChecked(pump_params.get("enable", False))
+            pump_speed = pump_params.get("speed", 50)
+            self.pump_speed_slider.setValue(pump_speed)
+            self.pump_speed_spinbox.setValue(pump_speed)
+
             # 转换为秒显示
             interval_ms = self.step_params.get("interval", 0)
             self.interval_entry.setText(str(interval_ms / 1000.0))
@@ -197,6 +244,12 @@ class MotorStepConfig(QDialog):
                     "angle": angle,
                 }
 
+            # 保存进样泵参数
+            params["pump"] = {
+                "enable": self.pump_enable_check.isChecked(),
+                "speed": self.pump_speed_spinbox.value(),
+            }
+
             interval_text = self.interval_entry.text().strip()
             # 转换为毫秒保存
             params["interval"] = 5000 if not interval_text else int(float(interval_text) * 1000)
@@ -205,3 +258,23 @@ class MotorStepConfig(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "输入错误", str(e))
+
+    def _sync_pump_spinbox(self, value: int) -> None:
+        """同步进样泵转速数值框。
+
+        Args:
+            value: 滑块值
+        """
+        self.pump_speed_spinbox.blockSignals(True)
+        self.pump_speed_spinbox.setValue(value)
+        self.pump_speed_spinbox.blockSignals(False)
+
+    def _sync_pump_slider(self, value: int) -> None:
+        """同步进样泵转速滑块。
+
+        Args:
+            value: 数值框值
+        """
+        self.pump_speed_slider.blockSignals(True)
+        self.pump_speed_slider.setValue(value)
+        self.pump_speed_slider.blockSignals(False)

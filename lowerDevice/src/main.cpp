@@ -4,19 +4,24 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 
-// ============== PID 参数定义（可由上位机配置） ==============
+// 新增模块头文�?
+#include "i2c_mux.h"
+#include "ads122c04.h"
+#include "protocol_packets.h"
+
+// ============== PID 参数定义（可由上位机配置�?==============
 float g_pidKp = 0.14f;            // 比例系数
 float g_pidKi = 0.015f;           // 积分系数
 float g_pidKd = 0.06f;            // 微分系数
-float g_pidOutputMin = 1.0f;      // 最小输出
-float g_pidOutputMax = 6.0f;      // 最大输出
+float g_pidOutputMin = 1.0f;      // 最小输�?
+float g_pidOutputMax = 6.0f;      // 最大输�?
 #define PID_DEADBAND 0.1f
 #define PID_INTEGRAL_LIMIT 25.0f  // 积分限幅
 
-// ============== 平滑度优先参数 ==============
+// ============== 平滑度优先参�?==============
 #define PID_STARTUP_SPEED_RATIO 0.5f  // 启动速度 = 最大速度 * 0.5 (中位速度启动)
 #define PID_SMOOTH_RAMP_TIME 200      // 平滑过渡时间 (ms)
-#define PID_JERK_LIMIT 50.0f          // 加速度变化率限制 (RPM/s²)
+#define PID_JERK_LIMIT 50.0f          // 加速度变化率限�?(RPM/s²)
 #define PID_RAMP_RATE 5.0f            // RPM/周期
 #define PID_INTEGRAL_ZONE 10.0f       // 积分区间
 #define PID_DAMPING_ZONE 2.0f         // 阻尼区间
@@ -28,74 +33,29 @@ float g_pidOutputMax = 6.0f;      // 最大输出
 #define PID_MOVE_TIMEOUT 30000
 #define PID_MOVE_STABLE_COUNT 10
 
-// ============== 二进制数据包定义 ==============
-#define PID_PACKET_INTERVAL 20  // 50Hz 数据包发送间隔
+#define PID_PACKET_INTERVAL 20  // 50Hz 数据包发送间�?
 
-#pragma pack(push, 1)
-// 普通PID数据包 (0xAA)
-typedef struct {
-    uint8_t  head1;         // 0x55
-    uint8_t  head2;         // 0xAA
-    uint8_t  motor_id;      // 电机ID: 0=X, 1=Y, 2=Z, 3=A
-    uint32_t timestamp;     // 时间戳 (micros)
-    float    target_angle;  // 目标角度
-    float    actual_angle;  // 实际角度 (MT6701)
-    float    theo_angle;    // 理论角度 (步数推算)
-    float    pid_out;       // PID输出值 (RPM)
-    float    error;         // 当前误差
-    uint8_t  checksum;      // 校验和
-    uint8_t  tail;          // 0x0A
-} PIDDataPacket;
-
-// PID测试结果数据包 (0xBB) - 边缘计算后上报
-typedef struct {
-    uint8_t  head1;              // 0x55
-    uint8_t  head2;              // 0xBB
-    uint8_t  motor_id;           // 电机ID
-    uint8_t  run_index;          // 第几轮测试 (0-based)
-    uint8_t  total_runs;         // 总测试轮数
-    uint16_t convergence_time_ms;// 收敛时间 (ms)
-    int16_t  max_overshoot_x100; // 最大过冲 (度*100, 有符号)
-    int16_t  final_error_x100;   // 最终误差 (度*100, 有符号)
-    uint8_t  oscillation_count;  // 振荡次数
-    uint8_t  smoothness_score;   // 平滑度评分 (0-100)
-    uint16_t startup_jerk_x100;  // 启动冲击度 (*100)
-    uint8_t  total_score;        // 综合评分 (0-100)
-    uint8_t  checksum;           // 校验和
-    uint8_t  tail;               // 0x0A
-} PIDTestResultPacket;
-
-// 角度数据包 (0xCC) - 实时角度流
-typedef struct {
-    uint8_t  head1;         // 0x55
-    uint8_t  head2;         // 0xCC
-    float    angles[4];     // X, Y, Z, A 角度 (4 * 4 = 16字节)
-    uint8_t  checksum;      // 校验和
-    uint8_t  tail;          // 0x0A
-} AngleDataPacket;          // 共20字节
-#pragma pack(pop)
-
-// ============== 角度流控制 ==============
+// ============== 角度流控�?==============
 bool g_angleStreamActive = false;
 unsigned long g_lastAngleSendTime = 0;
 const unsigned long ANGLE_SEND_INTERVAL = 20;  // 50Hz
 
 // ============== PID 测试模式相关定义 ==============
-#define PID_TEST_MAX_SAMPLES 200    // 最大采样点数
+#define PID_TEST_MAX_SAMPLES 200    // 最大采样点�?
 #define PID_TEST_SAMPLE_INTERVAL 20 // 采样间隔 (ms)
 
 // 测试数据采集结构
 struct PIDTestData {
-    bool active;                    // 测试是否进行中
+    bool active;                    // 测试是否进行�?
     uint8_t motorIndex;             // 测试电机
     float targetAngle;              // 转动角度增量（配置值）
-    float actualTargetAngle;        // 实际目标角度（计算后）
+    float actualTargetAngle;        // 实际目标角度（计算后�?
     bool direction;                 // 转动方向: true=正转(F), false=反转(B)
     uint8_t currentRun;             // 当前轮次
-    uint8_t totalRuns;              // 总轮次
+    uint8_t totalRuns;              // 总轮�?
     
     // 单轮数据采集
-    unsigned long runStartTime;     // 本轮开始时间
+    unsigned long runStartTime;     // 本轮开始时�?
     float initialAngle;             // 初始角度
     float samples[PID_TEST_MAX_SAMPLES];       // 角度采样
     float outputSamples[PID_TEST_MAX_SAMPLES]; // 输出采样
@@ -103,11 +63,11 @@ struct PIDTestData {
     unsigned long lastSampleTime;   // 上次采样时间
     
     // 边缘计算中间变量
-    float maxAngle;                 // 过程中最大角度
-    float minAngle;                 // 过程中最小角度
+    float maxAngle;                 // 过程中最大角�?
+    float minAngle;                 // 过程中最小角�?
     int8_t lastErrorSign;           // 上次误差符号
     uint8_t zeroCrossCount;         // 过零次数
-    bool hasConverged;              // 是否已收敛
+    bool hasConverged;              // 是否已收�?
     unsigned long convergenceTime;  // 收敛时刻
 };
 
@@ -117,20 +77,20 @@ PIDTestData pidTest = {false, 0, 0, 0, 0, 0, 0, 0, {}, {}, 0, 0, 0, 0, 0, 0, fal
 struct ScoreWeights {
     uint8_t convergence;   // 收敛时间权重 (默认30)
     uint8_t overshoot;     // 过冲权重 (默认25)
-    uint8_t steadyError;   // 稳态误差权重 (默认15)
-    uint8_t smoothness;    // 平滑度权重 (默认20)
+    uint8_t steadyError;   // 稳态误差权�?(默认15)
+    uint8_t smoothness;    // 平滑度权�?(默认20)
     uint8_t oscillation;   // 振荡权重 (默认10)
 };
 
-// 权重: 收敛35, 过冲20, 稳态误差20, 平滑度15, 振荡10
+// 权重: 收敛35, 过冲20, 稳态误�?0, 平滑�?5, 振荡10
 ScoreWeights scoreWeights = {35, 20, 20, 15, 10};
 
-// 校准状态枚举
+// 校准状态枚�?
 enum CalibrationState {
     CAL_IDLE, CAL_RUNNING, CAL_SUCCESS, CAL_TIMEOUT_ERR, CAL_SENSOR_ERR
 };
 
-// PID 控制器结构
+// PID 控制器结�?
 struct PIDController {
     float Kp, Ki, Kd;
     float integral;
@@ -148,7 +108,7 @@ struct PIDController {
     }
 };
 
-// 校准上下文结构
+// 校准上下文结�?
 struct CalibrationContext {
     CalibrationState state;
     uint8_t motorMask;
@@ -162,7 +122,16 @@ struct CalibrationContext {
 
 CalibrationContext calCtx;
 
-const uint8_t angleChannels[4] = {0, 3, 4, 7};
+// ============== 可配�?I2C 通道 (i2c_mux.h 中声明为 extern) ==============
+uint8_t g_angleChannels[4] = {0, 3, 4, 7};
+uint8_t g_spectroChannel = 2;
+
+// ============== ADS122C04 全局状�?==============
+ADSConfig g_adsConfig;
+unsigned long g_lastSpectroPollTime = 0;
+int32_t g_lastSpectroRawCode = 0;
+float g_lastSpectroVoltage = 0.0f;
+uint8_t g_lastSpectroStatus = SPECTRO_STATUS_NOT_CONFIG;
 
 // --- 引脚定义 ---
 #define X_STP 13
@@ -173,15 +142,24 @@ const uint8_t angleChannels[4] = {0, 3, 4, 7};
 #define Z_DIR 25
 #define A_STP 33
 #define A_DIR 32
-#define EN 2
 #define BOOT 0
 
-// --- TCA9548A / MT6701 ---
-#define TCA_ADDR 0x70
-#define MT6701_ADDR 0x06
-#define MAX_RETRIES 3
+// ============== 进样泵控制定�?==============
+#define PUMP_PIN 2              // 进样泵控制引�?(GPIO2)
+#define PUMP_PWM_CHANNEL 0      // LEDC PWM 通道
+#define PUMP_PWM_FREQ 1000      // PWM 频率 (Hz)
+#define PUMP_PWM_RESOLUTION 8   // PWM 分辨�?(8�? 0-255)
 
-// --- 电机参数 ---
+// 进样泵状�?
+struct PumpState {
+    bool enabled;               // 进样泵启停状�?
+    uint8_t speedPercent;       // 转速百分比 (0-100)
+    uint8_t pwmDuty;            // 实际PWM占空�?(0-255)
+};
+
+PumpState pumpState = {false, 0, 0};
+
+// --- 电机参数 (TCA/MT6701 常量已移�?i2c_mux.h) ---
 const float STEP_PER_DEGREE = 1.0 / (2.25/379.16);
 const float STEPS_PER_REV = 360.0 * STEP_PER_DEGREE;
 const float MIN_INTERVAL = 50;
@@ -210,14 +188,14 @@ struct MotorState {
     
     // PID 定位模式
     bool isPIDMode;
-    float pidTargetAngle;       // 存储环形目标 (0~360)，用于显示
+    float pidTargetAngle;       // 存储环形目标 (0~360)，用于显�?
     float pidPrecision;
     uint8_t pidStableCount;
     uint8_t pidSensorErrCount;
     unsigned long pidStartTime;
     PIDController pidCtrl;
     
-    // 解环角度追踪（多圈PID）
+    // 解环角度追踪（多圈PID�?
     float lastRawAngle;         // 上一次传感器读数 (0~360)
     float absAngle;             // 连续累积角度
     float absTargetAngle;       // 绝对目标角度
@@ -232,7 +210,7 @@ struct MotorState {
     // 速度斜坡控制
     float lastOutputRPM;
     
-    // 重置解环角度（防溢出）
+    // 重置解环角度（防溢出�?
     void resetAbsAngle(float currentRaw) {
         absAngle = 0.0f;
         lastRawAngle = currentRaw;
@@ -291,32 +269,58 @@ uint16_t calculateStartupJerk();
 uint8_t calculateTotalScore(uint16_t convTime, int16_t overshoot, int16_t finalErr, uint8_t oscCount, uint8_t smoothness);
 void stopPIDTest();
 
-// 角度流函数声明
+// 角度流函数声�?
 void sendAnglePacket();
+
+// --- 进样泵控制函�?---
+void setPumpSpeed(uint8_t speedPercent) {
+    if (speedPercent > 100) speedPercent = 100;
+    pumpState.speedPercent = speedPercent;
+    pumpState.pwmDuty = (uint8_t)((float)speedPercent / 100.0f * 255.0f);
+    if (pumpState.enabled) {
+        ledcWrite(PUMP_PWM_CHANNEL, pumpState.pwmDuty);
+    }
+}
+
+void setPumpEnabled(bool enabled) {
+    pumpState.enabled = enabled;
+    if (enabled) {
+        ledcWrite(PUMP_PWM_CHANNEL, pumpState.pwmDuty);
+    } else {
+        ledcWrite(PUMP_PWM_CHANNEL, 0);
+    }
+}
 
 // --- Setup ---
 void setup() {
-    pinMode(EN, OUTPUT);
     pinMode(BOOT, OUTPUT);
-    digitalWrite(EN, LOW);
     digitalWrite(BOOT, LOW);
-    
+
     for(auto &p : motorPins) {
         pinMode(p[0], OUTPUT);
         pinMode(p[1], OUTPUT);
         digitalWrite(p[1], LOW);
     }
-    
+
+    // 初始化进样泵 PWM
+    ledcSetup(PUMP_PWM_CHANNEL, PUMP_PWM_FREQ, PUMP_PWM_RESOLUTION);
+    ledcAttachPin(PUMP_PIN, PUMP_PWM_CHANNEL);
+    ledcWrite(PUMP_PWM_CHANNEL, 0);  // 初始停止
+
     Wire.begin(21, 22);
     Wire.setClock(100000);
     Serial.begin(115200);
     delay(100);
-    
+
+    // 初始化 ADS122C04 默认配置
+    adsConfigDefault(g_adsConfig);
+
     motorMutex = xSemaphoreCreateMutex();
-    
+
     Serial.printf("Global duty cycle set to: %.1f%%\n", GLOBAL_DUTY_CYCLE * 100);
     Serial.println("System Initialized. Core 1: Motors, Core 0: Comms/Sensors.");
     Serial.printf("PID Params: Kp=%.4f, Ki=%.5f, Kd=%.4f\n", g_pidKp, g_pidKi, g_pidKd);
+    Serial.println("Injection pump initialized on GPIO2.");
 
     xTaskCreatePinnedToCore(TaskComms, "Comms", 8192, NULL, 1, NULL, 0);
 }
@@ -362,11 +366,11 @@ void TaskComms(void *pvParameters) {
                         Serial.printf("PIDPARAM:%.4f,%.5f,%.4f,%.1f,%.1f\n", 
                             g_pidKp, g_pidKi, g_pidKd, g_pidOutputMin, g_pidOutputMax);
                     }
-                    // ===== 新增：停止测试 =====
+                    // ===== 新增：停止测�?=====
                     else if (inputBuffer == "PIDTESTSTOP") {
                         stopPIDTest();
                     }
-                    // ===== 新增：配置评分权重 =====
+                    // ===== 新增：配置评分权�?=====
                     else if (inputBuffer.startsWith("PIDWEIGHTS:")) {
                         // 格式: PIDWEIGHTS:conv,ovs,err,smooth,osc
                         int colonIdx = inputBuffer.indexOf(':');
@@ -392,6 +396,85 @@ void TaskComms(void *pvParameters) {
                             Serial.println("PIDWEIGHTS_ERR:PARSE");
                         }
                     }
+                    // ===== 进样泵控制指�?=====
+                    // PUMP:ON - 启动进样�?
+                    // PUMP:OFF - 停止进样�?
+                    // PUMP:SPD:xx - 设置转速百分比 (0-100)
+                    // PUMP:SET:xx - 设置转速并启动 (0=停止)
+                    else if (inputBuffer.startsWith("PUMP:")) {
+                        String pumpCmd = inputBuffer.substring(5);
+                        if (pumpCmd == "ON") {
+                            setPumpEnabled(true);
+                            Serial.printf("PUMP_OK:ON,SPD=%d\n", pumpState.speedPercent);
+                        } else if (pumpCmd == "OFF") {
+                            setPumpEnabled(false);
+                            Serial.printf("PUMP_OK:OFF\n");
+                        } else if (pumpCmd.startsWith("SPD:")) {
+                            int speed = pumpCmd.substring(4).toInt();
+                            if (speed >= 0 && speed <= 100) {
+                                setPumpSpeed((uint8_t)speed);
+                                Serial.printf("PUMP_OK:SPD=%d\n", pumpState.speedPercent);
+                            } else {
+                                Serial.println("PUMP_ERR:SPD_RANGE");
+                            }
+                        } else if (pumpCmd.startsWith("SET:")) {
+                            int speed = pumpCmd.substring(4).toInt();
+                            if (speed >= 0 && speed <= 100) {
+                                setPumpSpeed((uint8_t)speed);
+                                setPumpEnabled(speed > 0);
+                                Serial.printf("PUMP_OK:SET=%d,%s\n", speed, speed > 0 ? "ON" : "OFF");
+                            } else {
+                                Serial.println("PUMP_ERR:SET_RANGE");
+                            }
+                        } else if (pumpCmd == "STATUS") {
+                            Serial.printf("PUMP_STATUS:%s,SPD=%d\n",
+                                pumpState.enabled ? "ON" : "OFF", pumpState.speedPercent);
+                        } else {
+                            Serial.println("PUMP_ERR:UNKNOWN_CMD");
+                        }
+                    }
+                    // ===== I2C 通道映射指令 =====
+                    else if (inputBuffer.startsWith("I2CMAP:")) {
+                        parseI2CMapCommand(inputBuffer);
+                    }
+                    else if (inputBuffer == "I2CMAP?") {
+                        Serial.printf("I2CMAP_OK:X=%d,Y=%d,Z=%d,A=%d,SPEC=%d\n",
+                            g_angleChannels[0], g_angleChannels[1], g_angleChannels[2], g_angleChannels[3], g_spectroChannel);
+                    }
+                    // ===== ADS122C04 配置与控制指令 =====
+                    else if (inputBuffer.startsWith("ADSCFG:")) {
+                        parseADSConfigCommand(inputBuffer, g_adsConfig);
+                    }
+                    else if (inputBuffer == "ADSSTART") {
+                        if (!g_adsConfig.enabled) {
+                            Serial.println("ADS_ERR:CONFIG");
+                        } else {
+                            invalidateTcaCache();
+                            if (selectTcaChannel(g_adsConfig.tcaChannel)) {
+                                if (adsInitAndStart(g_adsConfig)) {
+                                    g_lastSpectroPollTime = millis();
+                                    g_lastSpectroStatus = 0;
+                                    Serial.println("ADS_OK:START");
+                                } else {
+                                    g_adsConfig.running = false;
+                                    Serial.println("ADS_ERR:I2C");
+                                }
+                            } else {
+                                Serial.println("ADS_ERR:I2C");
+                            }
+                            invalidateTcaCache();
+                        }
+                    }
+                    else if (inputBuffer == "ADSSTOP") {
+                        adsStop(g_adsConfig);
+                        Serial.println("ADS_OK:STOP");
+                    }
+                    else if (inputBuffer == "ADSSTATUS?") {
+                        Serial.printf("ADS_STATUS:%s,CH=%d,ADDR=0x%02X,DR=%d,GAIN=%d,REF=%s\n",
+                            g_adsConfig.running ? "RUNNING" : "STOPPED",
+                            g_adsConfig.tcaChannel, g_adsConfig.address, g_adsConfig.adcRate,
+                            g_adsConfig.gain, g_adsConfig.vrefMode == ADS_VREF_AVDD ? "AVDD" : "INT");
+                    }
                     // ===== 角度流控制指令 =====
                     else if (inputBuffer == "ANGLESTREAM_START") {
                         g_angleStreamActive = true;
@@ -402,11 +485,11 @@ void TaskComms(void *pvParameters) {
                         g_angleStreamActive = false;
                         Serial.println("ANGLESTREAM_STOPPED");
                     }
-                    // 单次获取角度（兼容性保留，改为二进制包）
+                    // 单次获取角度（兼容性保留，改为二进制包�?
                     else if(inputBuffer == "GETANGLE") {
                         sendAnglePacket();
                     }
-                    // 旧版流控制指令（映射到新指令）
+                    // 旧版流控制指令（映射到新指令�?
                     else if (inputBuffer == "STREAM1") {
                         g_angleStreamActive = true;
                         g_lastAngleSendTime = millis();
@@ -469,7 +552,7 @@ void TaskComms(void *pvParameters) {
             }
         }
         
-        // 普通PID定位循环（包括测试模式，因为测试模式也使用PID定位）
+        // 普通PID定位循环（包括测试模式，因为测试模式也使用PID定位�?
         if (calCtx.state != CAL_RUNNING) {
             if (millis() - lastCalTime >= CAL_INTERVAL) {
                 runMotorPID();
@@ -477,7 +560,7 @@ void TaskComms(void *pvParameters) {
             }
         }
         
-        // ===== PID测试模式采样（在PID控制之后执行） =====
+        // ===== PID测试模式采样（在PID控制之后执行�?=====
         if (pidTest.active) {
             runPIDTestSampling();
         }
@@ -501,7 +584,7 @@ void TaskComms(void *pvParameters) {
             }
         }
         
-        // 角度流发送（50Hz）
+        // 角度流发送（50Hz�?
         if (g_angleStreamActive) {
             unsigned long now = millis();
             if (now - g_lastAngleSendTime >= ANGLE_SEND_INTERVAL) {
@@ -510,9 +593,62 @@ void TaskComms(void *pvParameters) {
             }
         }
         
-        // 完成信号发送角度
+        // 完成信号发送角�?
         if(needSend) {
             sendAnglePacket();
+        }
+
+        // ===== ADS122C04 分光数据轮询与发送 =====
+        if (g_adsConfig.running && g_adsConfig.publishRate > 0) {
+            unsigned long now = millis();
+            unsigned long specInterval = 1000 / g_adsConfig.publishRate;
+            if (now - g_lastSpectroPollTime >= specInterval) {
+                g_lastSpectroPollTime = now;
+
+                // 切换到 ADS 所在的 TCA 通道
+                invalidateTcaCache();
+                if (selectTcaChannel(g_adsConfig.tcaChannel)) {
+                    int32_t rawCode = 0;
+                    if (adsReadData(g_adsConfig.address, &rawCode)) {
+                        float voltage = codeToVoltage(rawCode, g_adsConfig.vrefValue, (float)g_adsConfig.gain);
+                        g_lastSpectroRawCode = rawCode;
+                        g_lastSpectroVoltage = voltage;
+
+                        uint8_t status = SPECTRO_STATUS_VALID;
+                        // 饱和检测
+                        if (rawCode >= 8388607 || rawCode <= -8388608) {
+                            status |= SPECTRO_STATUS_SATURATED;
+                        }
+                        g_lastSpectroStatus = status;
+
+                        // 发送 0xDD 分光数据包
+                        SpectroDataPacket pkt;
+                        pkt.head1 = PACKET_HEADER1;
+                        pkt.head2 = HEADER2_SPECTRO;
+                        pkt.timestamp_ms = now;
+                        pkt.tca_channel = g_adsConfig.tcaChannel;
+                        pkt.status = status;
+                        pkt.raw_code = rawCode;
+                        pkt.voltage = voltage;
+
+                        // XOR 校验和 (从 head2 到 voltage)
+                        uint8_t* pktData = (uint8_t*)&pkt.head2;
+                        pkt.checksum = 0;
+                        int checksumLen = sizeof(SpectroDataPacket) - 3; // 减去 head1, checksum, tail
+                        for (int ci = 0; ci < checksumLen; ci++) {
+                            pkt.checksum ^= pktData[ci];
+                        }
+                        pkt.tail = PACKET_TAIL;
+
+                        Serial.write((uint8_t*)&pkt, sizeof(pkt));
+                    } else {
+                        g_lastSpectroStatus = SPECTRO_STATUS_I2C_ERROR;
+                    }
+                } else {
+                    g_lastSpectroStatus = SPECTRO_STATUS_I2C_ERROR;
+                }
+                invalidateTcaCache(); // 恢复 TCA 缓存，下次角度读取会重新选择
+            }
         }
 
         vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -558,7 +694,7 @@ void parsePIDConfig(String cmd) {
         kd = params.substring(comma2 + 1).toFloat();
     }
     
-    // 参数范围检查
+    // 参数范围检�?
     if (kp < 0.01f || kp > 2.0f) { Serial.println("PIDCFG_ERR:KP_RANGE"); return; }
     if (ki < 0.0f || ki > 1.0f) { Serial.println("PIDCFG_ERR:KI_RANGE"); return; }
     if (kd < 0.0f || kd > 1.0f) { Serial.println("PIDCFG_ERR:KD_RANGE"); return; }
@@ -578,7 +714,7 @@ void parsePIDConfig(String cmd) {
 // ============== PID测试模式解析 ==============
 void parsePIDTest(String cmd) {
     // 格式: PIDTEST:<Motor>,<Dir>,<Angle>,<Runs>
-    // 示例: PIDTEST:X,F,60.0,5  X电机正转60°测试5次
+    // 示例: PIDTEST:X,F,60.0,5  X电机正转60°测试5�?
     int colonIdx = cmd.indexOf(':');
     if (colonIdx == -1) {
         Serial.println("PIDTEST_ERR:FORMAT");
@@ -618,7 +754,7 @@ void parsePIDTest(String cmd) {
         return;
     }
     
-    // 角度必须为正（方向由 dir 决定）
+    // 角度必须为正（方向由 dir 决定�?
     if (targetAngle < 0) targetAngle = fabs(targetAngle);
     
     initPIDTest(motorIndex, targetAngle, direction, runs);
@@ -641,7 +777,7 @@ void initPIDTest(uint8_t motorIndex, float targetAngle, bool direction, uint8_t 
 
 void startNextTestRun() {
     if (pidTest.currentRun >= pidTest.totalRuns) {
-        // 所有测试完成
+        // 所有测试完�?
         pidTest.active = false;
         const char motorNames[] = {'X', 'Y', 'Z', 'A'};
         Serial.printf("PIDTEST_DONE:%c\n", motorNames[pidTest.motorIndex]);
@@ -662,10 +798,10 @@ void startNextTestRun() {
     pidTest.convergenceTime = 0;
     
     // 读取初始角度
-    pidTest.initialAngle = readAngleWithRetry(angleChannels[pidTest.motorIndex]);
+    pidTest.initialAngle = readAngleWithRetry(g_angleChannels[pidTest.motorIndex]);
     if (pidTest.initialAngle < 0) pidTest.initialAngle = 0;
     
-    // 获取电机状态以初始化/更新解环角度
+    // 获取电机状态以初始�?更新解环角度
     MotorState* m = &motors[pidTest.motorIndex];
     if (!m->absAngleValid) {
         m->absAngle = 0.0f;
@@ -740,10 +876,10 @@ void runPIDTestSampling() {
     
     // 检查PID是否完成
     if (!m->isPIDMode) {
-        // PID完成，结束本轮测试
+        // PID完成，结束本轮测�?
         finishTestRun();
         
-        // 等待一段时间后开始下一轮（连续正转，不返回）
+        // 等待一段时间后开始下一轮（连续正转，不返回�?
         delay(2000);  // 确保电机完全稳定
         pidTest.currentRun++;
         startNextTestRun();
@@ -753,17 +889,17 @@ void runPIDTestSampling() {
     // 采样
     if (now - pidTest.lastSampleTime >= PID_TEST_SAMPLE_INTERVAL) {
         if (pidTest.sampleCount < PID_TEST_MAX_SAMPLES) {
-            float angle = readAngleWithRetry(angleChannels[pidTest.motorIndex]);
+            float angle = readAngleWithRetry(g_angleChannels[pidTest.motorIndex]);
             if (angle >= 0 && angle <= 360) {
                 pidTest.samples[pidTest.sampleCount] = angle;
                 pidTest.outputSamples[pidTest.sampleCount] = m->lastOutputRPM;
                 pidTest.sampleCount++;
                 
-                // 更新极值
+                // 更新极�?
                 if (angle > pidTest.maxAngle) pidTest.maxAngle = angle;
                 if (angle < pidTest.minAngle) pidTest.minAngle = angle;
                 
-                // 振荡检测（误差过零）- 使用实际目标角度
+                // 振荡检测（误差过零�? 使用实际目标角度
                 float error = normalizeAngleError(pidTest.actualTargetAngle, angle);
                 int8_t errorSign = (error > 0.1f) ? 1 : ((error < -0.1f) ? -1 : 0);
                 if (pidTest.lastErrorSign != 0 && errorSign != 0 && 
@@ -772,7 +908,7 @@ void runPIDTestSampling() {
                 }
                 if (errorSign != 0) pidTest.lastErrorSign = errorSign;
                 
-                // 收敛检测 (死区0.1°)
+                // 收敛检�?(死区0.1°)
                 if (!pidTest.hasConverged && fabs(error) < 0.1f) {
                     pidTest.hasConverged = true;
                     pidTest.convergenceTime = now;
@@ -809,7 +945,7 @@ uint8_t calculateSmoothnessScore() {
     // 评分：jerk越小越好
     float jerkScore = 100.0f * (1.0f - constrain(avgJerk / 3.0f, 0.0f, 1.0f));
     
-    // 考虑最大jerk的惩罚
+    // 考虑最大jerk的惩�?
     float maxJerkPenalty = constrain(maxJerk / 8.0f, 0.0f, 0.3f);
     jerkScore *= (1.0f - maxJerkPenalty);
     
@@ -819,7 +955,7 @@ uint8_t calculateSmoothnessScore() {
 uint16_t calculateStartupJerk() {
     if (pidTest.sampleCount < 5) return 0;
     
-    // 分析前5个采样点的加速度变化
+    // 分析�?个采样点的加速度变化
     float maxStartupJerk = 0;
     for (int i = 2; i < min(5, (int)pidTest.sampleCount); i++) {
         float accel1 = pidTest.outputSamples[i-1] - pidTest.outputSamples[i-2];
@@ -836,7 +972,7 @@ uint8_t calculateTotalScore(uint16_t convTime, int16_t overshoot,
                             uint8_t smoothness) {
     float score = 0;
     
-    // 1. 收敛时间评分 (目标: <2000ms 满分, >5000ms 0分)
+    // 1. 收敛时间评分 (目标: <2000ms 满分, >5000ms 0�?
     float convScore;
     if (convTime < 2000) {
         convScore = 100.0f * (1.0f - (float)convTime / 2000.0f);
@@ -847,7 +983,7 @@ uint8_t calculateTotalScore(uint16_t convTime, int16_t overshoot,
     }
     score += convScore * scoreWeights.convergence / 100.0f;
     
-    // 2. 过冲评分 (目标: 0过冲满分, >2度0分)
+    // 2. 过冲评分 (目标: 0过冲满分, >2�?�?
     float overshootDeg = fabs(overshoot) / 100.0f;
     float overshootScore;
     if (overshootDeg <= 0.05f) {
@@ -861,15 +997,15 @@ uint8_t calculateTotalScore(uint16_t convTime, int16_t overshoot,
     }
     score += overshootScore * scoreWeights.overshoot / 100.0f;
     
-    // 3. 稳态误差评分 (目标: <0.1度满分, >1度0分)
+    // 3. 稳态误差评�?(目标: <0.1度满�? >1�?�?
     float errDeg = fabs(finalErr) / 100.0f;
     float errScore = 100.0f * (1.0f - constrain(errDeg / 1.0f, 0.0f, 1.0f));
     score += errScore * scoreWeights.steadyError / 100.0f;
     
-    // 4. 平滑度评分 (直接使用)
+    // 4. 平滑度评�?(直接使用)
     score += smoothness * scoreWeights.smoothness / 100.0f;
     
-    // 5. 振荡评分 (目标: 0-1次满分, >5次0分)
+    // 5. 振荡评分 (目标: 0-1次满�? >5�?�?
     float oscScore;
     if (oscCount <= 1) {
         oscScore = 100;
@@ -904,7 +1040,7 @@ void finishTestRun() {
     float overshoot = 0;
     
     if (expectedDirection > 0) {
-        // 正向运动，检查是否超过目标
+        // 正向运动，检查是否超过目�?
         overshoot = normalizeAngleError(pidTest.maxAngle, pidTest.actualTargetAngle);
         if (overshoot < 0) overshoot = 0;
     } else {
@@ -914,7 +1050,7 @@ void finishTestRun() {
     }
     packet.max_overshoot_x100 = (int16_t)(overshoot * 100);
     
-    // 最终误差 - 使用实际目标角度
+    // 最终误�?- 使用实际目标角度
     float finalAngle = (pidTest.sampleCount > 0) ? pidTest.samples[pidTest.sampleCount - 1] : 0;
     float finalError = normalizeAngleError(pidTest.actualTargetAngle, finalAngle);
     packet.final_error_x100 = (int16_t)(finalError * 100);
@@ -922,10 +1058,10 @@ void finishTestRun() {
     // 振荡次数
     packet.oscillation_count = pidTest.zeroCrossCount / 2;
     
-    // 平滑度评分
+    // 平滑度评�?
     packet.smoothness_score = calculateSmoothnessScore();
     
-    // 启动冲击度
+    // 启动冲击�?
     packet.startup_jerk_x100 = calculateStartupJerk();
     
     // 综合评分
@@ -937,7 +1073,7 @@ void finishTestRun() {
         packet.smoothness_score
     );
     
-    // 校验和
+    // 校验�?
     uint8_t* data = (uint8_t*)&packet.motor_id;
     packet.checksum = 0;
     for (int i = 0; i < 14; i++) {
@@ -945,10 +1081,10 @@ void finishTestRun() {
     }
     packet.tail = 0x0A;
     
-    // 发送二进制数据包
+    // 发送二进制数据�?
     Serial.write((uint8_t*)&packet, sizeof(packet));
     
-    // 同时发送文本格式便于调试
+    // 同时发送文本格式便于调�?
     const char motorNames[] = {'X', 'Y', 'Z', 'A'};
     Serial.printf("PIDTEST_RESULT:%c,run=%d,conv=%d,ovs=%.2f,err=%.2f,osc=%d,smooth=%d,score=%d\n",
         motorNames[pidTest.motorIndex],
@@ -964,54 +1100,24 @@ void finishTestRun() {
 
 
 // --- 辅助函数 ---
+// readAngleWithRetry 现在委托�?i2c_mux.h 中的 readMt6701Angle
 float readAngleWithRetry(uint8_t channel) {
-    for (int retry = 0; retry < MAX_RETRIES; retry++) {
-        Wire.beginTransmission(TCA_ADDR);
-        Wire.write(1 << channel);
-        if (Wire.endTransmission(true) != 0) { delay(2); continue; }
-        delayMicroseconds(200);
-
-        Wire.beginTransmission(MT6701_ADDR);
-        Wire.write(0x03);
-        if (Wire.endTransmission(true) != 0) { delay(2); continue; }
-        delayMicroseconds(100);
-
-        uint16_t highByte, lowByte;
-        if (Wire.requestFrom((uint16_t)MT6701_ADDR, (uint8_t)1, (bool)true) == 1) {
-            highByte = Wire.read();
-        } else { delay(2); continue; }
-
-        Wire.beginTransmission(MT6701_ADDR);
-        Wire.write(0x04);
-        if (Wire.endTransmission(true) != 0) { delay(2); continue; }
-        delayMicroseconds(100);
-
-        if (Wire.requestFrom((uint16_t)MT6701_ADDR, (uint8_t)1, (bool)true) == 1) {
-            lowByte = Wire.read();
-        } else { delay(2); continue; }
-
-        if (highByte == 0xFF && lowByte == 0xFF) { delay(2); continue; }
-        
-        uint16_t raw = (highByte << 6) | (lowByte >> 2);
-        float angle = (raw / 16384.0) * 360.0;
-        if (angle >= 0 && angle <= 360) return angle;
-    }
-    return -1.0;
+    return readMt6701Angle(channel);
 }
 
-// ============== 二进制角度数据包发送 ==============
+// ============== 二进制角度数据包发�?==============
 void sendAnglePacket() {
     static float last_valid[4] = {0};
     AngleDataPacket packet;
     
-    packet.head1 = 0x55;
-    packet.head2 = 0xCC;
+    packet.head1 = PACKET_HEADER1;
+    packet.head2 = HEADER2_ANGLE;
     
-    // 读取四个电机角度
-    packet.angles[0] = readAngleWithRetry(0);  // X
-    packet.angles[1] = readAngleWithRetry(3);  // Y
-    packet.angles[2] = readAngleWithRetry(4);  // Z
-    packet.angles[3] = readAngleWithRetry(7);  // A
+    // 读取四个电机角度 (使用可配置通道)
+    packet.angles[0] = readAngleWithRetry(g_angleChannels[0]);  // X
+    packet.angles[1] = readAngleWithRetry(g_angleChannels[1]);  // Y
+    packet.angles[2] = readAngleWithRetry(g_angleChannels[2]);  // Z
+    packet.angles[3] = readAngleWithRetry(g_angleChannels[3]);  // A
     
     // 处理无效读数
     for (int i = 0; i < 4; i++) {
@@ -1022,7 +1128,7 @@ void sendAnglePacket() {
         }
     }
     
-    // 计算校验和 (从head2开始到angles结束)
+    // 计算校验�?(从head2开始到angles结束)
     uint8_t* data = (uint8_t*)&packet.head2;
     packet.checksum = 0;
     for (int i = 0; i < 17; i++) {  // head2(1) + angles(16) = 17
@@ -1033,7 +1139,7 @@ void sendAnglePacket() {
     Serial.write((uint8_t*)&packet, sizeof(packet));
 }
 
-// 保留旧函数名兼容性，内部调用新函数
+// 保留旧函数名兼容性，内部调用新函�?
 void sendAngles() {
     sendAnglePacket();
 }
@@ -1095,7 +1201,7 @@ void stepMotor(MotorState &m, byte stepPin, byte dirPin, int idx) {
     }
 }
 
-// ============== 二进制数据包发送 ==============
+// ============== 二进制数据包发�?==============
 void sendPIDDataPacket(int motorIndex, float currentAngle, float error, float pidOutput) {
     MotorState* m = &motors[motorIndex];
     PIDDataPacket packet;
@@ -1157,7 +1263,7 @@ void parseCommand(String cmd) {
         int searchStart = i;
         int vIndex = cmd.indexOf('V', searchStart);
         int jIndex = cmd.indexOf('J', searchStart);
-        int rIndex = cmd.indexOf('R', searchStart);  // R 指令替代旧 T 指令
+        int rIndex = cmd.indexOf('R', searchStart);  // R 指令替代�?T 指令
         
         float cmdRpm = 5.0f;
         if(vIndex != -1 && vIndex < cmd.length()) {
@@ -1168,12 +1274,12 @@ void parseCommand(String cmd) {
             if (cmdRpm <= 0) cmdRpm = 5.0f;
         }
         
-        // ============== R 指令：相对增量闭环 PID ==============
+        // ============== R 指令：相对增量闭�?PID ==============
         // 格式: <Motor>E<Dir>R<Delta>P<Precision>
-        // 例: XEFR360P0.1  X电机正转360°，精度0.1°
+        // �? XEFR360P0.1  X电机正转360°，精�?.1°
         if(rIndex != -1 && rIndex >= searchStart){
             int pIndex = cmd.indexOf('P', rIndex);
-            float delta;  // 相对增量（>=0）
+            float delta;  // 相对增量�?=0�?
             float precision = 0.1f;  // 默认精度
             
             if(pIndex != -1 && pIndex > rIndex) {
@@ -1199,8 +1305,8 @@ void parseCommand(String cmd) {
             // delta 必须 >= 0，方向由 F/B 决定
             if (delta < 0) delta = fabs(delta);
             
-            // 读取当前传感器角度
-            float rawAngle = readAngleWithRetry(angleChannels[motorIndex]);
+            // 读取当前传感器角�?
+            float rawAngle = readAngleWithRetry(g_angleChannels[motorIndex]);
             if (rawAngle < 0) rawAngle = 0;
             
             // 初始化或更新解环角度
@@ -1213,7 +1319,7 @@ void parseCommand(String cmd) {
                 m->lastRawAngle = rawAngle;
             }
             
-            // 溢出保护：当累积角度过大时重置
+            // 溢出保护：当累积角度过大时重�?
             if (fabs(m->absAngle) > 1e6f) {
                 m->absAngle = 0.0f;
             }
@@ -1258,7 +1364,7 @@ void parseCommand(String cmd) {
             continue;
         }
         
-        // 传统开环模式: J 指令
+        // 传统开环模�? J 指令
         if(jIndex != -1 && jIndex >= searchStart){
             m->isPIDMode = false;
             
@@ -1299,16 +1405,16 @@ float normalizeAngleError(float target, float current) {
     return error;
 }
 
-// 解环算法：将传感器 0~360° 读数转换为连续累积角度
+// 解环算法：将传感�?0~360° 读数转换为连续累积角�?
 float unwrapAngle(float newRaw, float lastRaw, float currentAbs) {
     float delta = newRaw - lastRaw;
-    // 检测 0/360° 跨越
+    // 检�?0/360° 跨越
     if (delta > 180.0f) delta -= 360.0f;
     else if (delta < -180.0f) delta += 360.0f;
     return currentAbs + delta;
 }
 
-// 直接误差 PID 计算（用于多圈控制，不使用 normalizeAngleError）
+// 直接误差 PID 计算（用于多圈控制，不使�?normalizeAngleError�?
 float computePIDDirect(PIDController &pid, float error, MotorState &motor) {
     if (fabs(error) < pid.deadband) {
         pid.integral = 0;
@@ -1392,12 +1498,12 @@ float computePID(PIDController &pid, float currentAngle, float targetAngle) {
 }
 
 // ============== 平滑度优先的PID控制 ==============
-// 基于距离的梯形速度曲线：加速 → 匀速 → 减速
+// 基于距离的梯形速度曲线：加�?�?匀�?�?减�?
 float computePIDWithSmoothing(PIDController &pid, float currentAngle, float targetAngle, MotorState &motor) {
     float error = normalizeAngleError(targetAngle, currentAngle);
     float absError = fabs(error);
     
-    // 到达目标，停止
+    // 到达目标，停�?
     if (absError < pid.deadband) {
         pid.integral = 0;
         motor.lastOutputRPM = 0;
@@ -1417,7 +1523,7 @@ float computePIDWithSmoothing(PIDController &pid, float currentAngle, float targ
     float maxSpeed = pid.outputMax;
     float minSpeed = pid.outputMin;
     
-    // 减速距离计算：假设减速率为 decelRate RPM/度
+    // 减速距离计算：假设减速率�?decelRate RPM/�?
     // 当前速度需要多少距离才能减到最小速度
     float decelRate = 1.5f;  // RPM/度，可调参数
     float brakeDistance = (currentRPM - minSpeed) / decelRate;
@@ -1432,24 +1538,24 @@ float computePIDWithSmoothing(PIDController &pid, float currentAngle, float targ
         float speedRatio = absError / brakeDistance;
         targetRPM = minSpeed + (currentRPM - minSpeed) * speedRatio;
         
-        // 确保平滑减速，不要突然降速
+        // 确保平滑减速，不要突然降�?
         float maxDecel = decelRate * absError * dt * 50;  // 允许的最大减速量
         if (currentRPM - targetRPM > maxDecel) {
             targetRPM = currentRPM - maxDecel;
         }
     } else {
-        // 加速/匀速区：使用增强PID计算目标速度
+        // 加�?匀速区：使用增强PID计算目标速度
         
-        // ===== 增益调度：根据误差大小动态调整增益 =====
+        // ===== 增益调度：根据误差大小动态调整增�?=====
         float effectiveKp = pid.Kp;
         float effectiveKd = pid.Kd;
         
         if (absError > 180.0f) {
-            // 大误差: 激进模式 - 更快响应
+            // 大误�? 激进模�?- 更快响应
             effectiveKp *= 1.2f;
             effectiveKd *= 0.8f;
         } else if (absError < 5.0f) {
-            // 小误差: 保守模式 - 更稳定
+            // 小误�? 保守模式 - 更稳�?
             effectiveKp *= 0.7f;
             effectiveKd *= 1.5f;
         }
@@ -1473,14 +1579,14 @@ float computePIDWithSmoothing(PIDController &pid, float currentAngle, float targ
         unsigned long elapsed = now - motor.pidStartTime;
         if (elapsed < 500 && motor.pidStartTime > 0) {
             float angleToMove = fabs(normalizeAngleError(targetAngle, motor.pidInitialAngle));
-            // 预估所需速度：角度 / 期望完成时间(秒) * 比例系数
+            // 预估所需速度：角�?/ 期望完成时间(�? * 比例系数
             float expectedSpeed = angleToMove / 2.0f;  // 假设2秒内完成
             feedforward = constrain(expectedSpeed, 0, maxSpeed * 0.4f);
         }
         
         float totalOutput = rawOutput + feedforward;
         
-        // ===== Back-calculation 积分抗饱和 =====
+        // ===== Back-calculation 积分抗饱�?=====
         float clampedOutput = constrain(totalOutput, -maxSpeed, maxSpeed);
         if (totalOutput != clampedOutput) {
             // 输出饱和时，回算并减少积分项
@@ -1502,8 +1608,8 @@ float computePIDWithSmoothing(PIDController &pid, float currentAngle, float targ
         targetRPM = startSpeed + (targetRPM - startSpeed) * smoothFactor;
     }
     
-    // ===== 速度变化率限制 =====
-    float maxAccel = PID_RAMP_RATE * dt * 50;  // 最大加速
+    // ===== 速度变化率限�?=====
+    float maxAccel = PID_RAMP_RATE * dt * 50;  // 最大加�?
     float maxDecel = PID_RAMP_RATE * dt * 80;  // 最大减速（允许更快减速）
     
     if (targetRPM > currentRPM + maxAccel) {
@@ -1572,7 +1678,7 @@ void sendCalibrationStatus() {
     
     for (int i = 0; i < 4; i++) {
         if (calCtx.motorMask & (1 << i)) {
-            float angle = readAngleWithRetry(angleChannels[i]);
+            float angle = readAngleWithRetry(g_angleChannels[i]);
             float error = normalizeAngleError(calCtx.targetAngle[i], angle);
             status += String(motorNames[i]) + "=" + String(error, 2);
             status += calCtx.motorDone[i] ? "(OK)" : "";
@@ -1607,7 +1713,7 @@ void runCalibrationPID() {
         if (!(calCtx.motorMask & (1 << i)) || calCtx.motorDone[i]) continue;
         
         allDone = false;
-        float currentAngle = readAngleWithRetry(angleChannels[i]);
+        float currentAngle = readAngleWithRetry(g_angleChannels[i]);
         
         if (currentAngle < 0 || currentAngle > 360) {
             calCtx.sensorErrorCount[i]++;
@@ -1668,7 +1774,7 @@ void initPIDMove(int motorIndex, float targetAngle, float precision) {
     m->stepInterval = 0;
     m->isContinuous = false;
     
-    float initAngle = readAngleWithRetry(angleChannels[motorIndex]);
+    float initAngle = readAngleWithRetry(g_angleChannels[motorIndex]);
     if (initAngle < 0) initAngle = 0;
     m->pidInitialAngle = initAngle;
     m->pidStartSteps = m->executedSteps;
@@ -1745,10 +1851,10 @@ void runMotorPID() {
         MotorState* m = &motors[i];
         if (!m->isPIDMode) continue;
         
-        // 读取当前传感器角度
-        float rawAngle = readAngleWithRetry(angleChannels[i]);
+        // 读取当前传感器角�?
+        float rawAngle = readAngleWithRetry(g_angleChannels[i]);
         
-        // 传感器错误检测
+        // 传感器错误检�?
         if (rawAngle < 0 || rawAngle > 360) {
             m->pidSensorErrCount++;
             if (m->pidSensorErrCount > 10) {
@@ -1771,11 +1877,11 @@ void runMotorPID() {
         // ===== 使用绝对角度计算误差（支持多圈）=====
         float error = m->absTargetAngle - m->absAngle;
         
-        // 用于 UI 显示的环形角度
+        // 用于 UI 显示的环形角�?
         float displayAngle = fmod(m->absAngle, 360.0f);
         if (displayAngle < 0) displayAngle += 360.0f;
         
-        // 超时检测
+        // 超时检�?
         if (now - m->pidStartTime > PID_MOVE_TIMEOUT) {
             sendPIDDataPacket(i, displayAngle, error, 0);
             Serial.printf("PID_TIMEOUT:%c,abs=%.2f,err=%.2f\n", motorNames[i], m->absAngle, error);
@@ -1789,7 +1895,7 @@ void runMotorPID() {
             continue;
         }
         
-        // 过冲检测
+        // 过冲检�?
         static float lastError[4] = {0, 0, 0, 0};
         bool overshootDetected = false;
         if (lastError[i] != 0) {
@@ -1800,7 +1906,7 @@ void runMotorPID() {
         }
         lastError[i] = error;
         
-        // 完成判定：基于绝对误差
+        // 完成判定：基于绝对误�?
         if (fabs(error) < m->pidPrecision && !overshootDetected) {
             m->pidStableCount++;
             
@@ -1824,7 +1930,7 @@ void runMotorPID() {
         } else {
             m->pidStableCount = 0;
             
-            // ===== 直接误差 PID 计算（不使用 normalize）=====
+            // ===== 直接误差 PID 计算（不使用 normalize�?====
             float pidOutput = computePIDDirect(m->pidCtrl, error, *m);
             
             if (now - m->lastPacketTime >= PID_PACKET_INTERVAL) {

@@ -2,6 +2,7 @@
 
 该模块提供手动控制页面相关功能，包括：
 - 电机手动控制UI和命令发送
+- 进样泵控制（启停/转速调节）
 - 定时运行功能（运行/暂停/继续/取消）
 - 手动预设管理（保存/加载）
 """
@@ -14,7 +15,6 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -26,8 +26,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
 )
+
+from src.ui.widgets import IOSSwitch
 
 
 class ManualMixin:
@@ -70,22 +73,36 @@ class ManualMixin:
             )
 
             vbox = QVBoxLayout(group)
+            vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # 启用和持续开关
             switch_frame = QFrame()
             hbox = QHBoxLayout(switch_frame)
-            enable_check = QCheckBox("启用")
-            enable_check.setFont(QFont("Microsoft YaHei", 16))
-            continuous_check = QCheckBox("持续")
-            continuous_check.setFont(QFont("Microsoft YaHei", 16))
+            hbox.setContentsMargins(0, 0, 0, 0)
+            hbox.addStretch()
+
+            enable_label = QLabel("启用")
+            enable_label.setFont(QFont("Microsoft YaHei", 16))
+            enable_check = IOSSwitch()
+
+            continuous_label = QLabel("持续")
+            continuous_label.setFont(QFont("Microsoft YaHei", 16))
+            continuous_check = IOSSwitch()
+
+            hbox.addWidget(enable_label)
             hbox.addWidget(enable_check)
+            hbox.addSpacing(16)
+            hbox.addWidget(continuous_label)
             hbox.addWidget(continuous_check)
-            vbox.addWidget(switch_frame)
+            hbox.addStretch()
+            vbox.addWidget(switch_frame, alignment=Qt.AlignmentFlag.AlignCenter)
 
             # 方向选择
             dir_group = QButtonGroup(self)
             dir_frame = QFrame()
             hbox_dir = QHBoxLayout(dir_frame)
+            hbox_dir.setContentsMargins(0, 0, 0, 0)
+            hbox_dir.addStretch()
             forward_btn = QRadioButton("正转")
             backward_btn = QRadioButton("反转")
             forward_btn.setFont(QFont("Microsoft YaHei", 16))
@@ -94,21 +111,25 @@ class ManualMixin:
             dir_group.addButton(backward_btn)
             forward_btn.setChecked(True)
             hbox_dir.addWidget(forward_btn)
+            hbox_dir.addSpacing(20)
             hbox_dir.addWidget(backward_btn)
-            vbox.addWidget(dir_frame)
+            hbox_dir.addStretch()
+            vbox.addWidget(dir_frame, alignment=Qt.AlignmentFlag.AlignCenter)
 
             # 参数输入
             speed_entry = QLineEdit()
             speed_entry.setPlaceholderText("速度值 (RPM)")
             speed_entry.setFont(QFont("Microsoft YaHei", 16))
             speed_entry.setFixedHeight(40)
-            vbox.addWidget(speed_entry)
+            speed_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vbox.addWidget(speed_entry, alignment=Qt.AlignmentFlag.AlignCenter)
 
             angle_entry = QLineEdit()
             angle_entry.setPlaceholderText("角度")
             angle_entry.setFont(QFont("Microsoft YaHei", 16))
             angle_entry.setFixedHeight(40)
-            vbox.addWidget(angle_entry)
+            angle_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vbox.addWidget(angle_entry, alignment=Qt.AlignmentFlag.AlignCenter)
 
             self.motor_widgets[motor] = {
                 "enable": enable_check,
@@ -161,11 +182,74 @@ class ManualMixin:
 
         layout.addWidget(control_frame)
 
-        # 定时运行控件
-        timer_frame = QFrame()
-        timer_layout = QHBoxLayout(timer_frame)
+        # ================= 进样泵控制 + 定时运行（同行布局） =================
+        bottom_frame = QFrame()
+        bottom_layout = QHBoxLayout(bottom_frame)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(10)
 
-        timer_label = QLabel("定时运行:")
+        # --- 左侧：进样泵控制 ---
+        pump_group = QGroupBox("进样泵控制")
+        pump_group.setFont(QFont("Microsoft YaHei", 16))
+        pump_inner_layout = QVBoxLayout(pump_group)
+        pump_inner_layout.setSpacing(10)
+
+        # 第一行：开关 + 转速输入，整体居中
+        pump_row1_frame = QFrame()
+        pump_row1_layout = QHBoxLayout(pump_row1_frame)
+        pump_row1_layout.setContentsMargins(0, 0, 0, 0)
+        pump_row1_layout.addStretch()
+
+        pump_title_label = QLabel("进样泵")
+        pump_title_label.setFont(QFont("Microsoft YaHei", 16))
+        self.pump_enable_switch = IOSSwitch()
+        self.pump_enable_switch.stateChanged.connect(self._on_pump_toggle)
+
+        self.pump_speed_spinbox = QSpinBox()
+        self.pump_speed_spinbox.setRange(0, 100)
+        self.pump_speed_spinbox.setValue(50)
+        self.pump_speed_spinbox.setSuffix("%")
+        self.pump_speed_spinbox.setPrefix("转速 ")
+        self.pump_speed_spinbox.setFont(QFont("Microsoft YaHei", 16))
+        self.pump_speed_spinbox.setFixedWidth(140)
+        self.pump_speed_spinbox.valueChanged.connect(self._on_pump_speed_changed)
+
+        pump_row1_layout.addWidget(pump_title_label)
+        pump_row1_layout.addWidget(self.pump_enable_switch)
+        pump_row1_layout.addSpacing(18)
+        pump_row1_layout.addWidget(self.pump_speed_spinbox)
+        pump_row1_layout.addStretch()
+        pump_inner_layout.addWidget(pump_row1_frame)
+
+        # 第二行：预设速度按钮，均匀分布且居中
+        pump_row2_frame = QFrame()
+        pump_row2_layout = QHBoxLayout(pump_row2_frame)
+        pump_row2_layout.setContentsMargins(0, 0, 0, 0)
+        pump_row2_layout.addStretch()
+        for preset in [25, 50, 75, 100]:
+            preset_btn = QPushButton(f"{preset}%")
+            preset_btn.setFont(QFont("Microsoft YaHei", 14))
+            preset_btn.setFixedHeight(36)
+            preset_btn.setMinimumWidth(68)
+            preset_btn.clicked.connect(lambda checked=False, value=preset: self._set_pump_speed_preset(value))
+            pump_row2_layout.addWidget(preset_btn)
+        pump_row2_layout.addStretch()
+        pump_inner_layout.addWidget(pump_row2_frame)
+
+        bottom_layout.addWidget(pump_group)
+
+        # --- 右侧：定时运行控制 ---
+        timer_group = QGroupBox("定时运行")
+        timer_group.setFont(QFont("Microsoft YaHei", 16))
+        timer_inner_layout = QVBoxLayout(timer_group)
+        timer_inner_layout.setSpacing(8)
+
+        # 第一行：时间输入
+        timer_time_frame = QFrame()
+        timer_time_layout = QHBoxLayout(timer_time_frame)
+        timer_time_layout.setContentsMargins(0, 0, 0, 0)
+
+        timer_label = QLabel("时长:")
         timer_label.setFont(QFont("Microsoft YaHei", 16))
 
         self.timer_input = QLineEdit()
@@ -178,40 +262,39 @@ class ManualMixin:
         self.time_unit_combo.setFont(QFont("Microsoft YaHei", 16))
         self.time_unit_combo.setFixedWidth(100)
 
-        # 按钮容器
-        btn_container = QFrame()
-        btn_layout = QHBoxLayout(btn_container)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
+        timer_time_layout.addWidget(timer_label)
+        timer_time_layout.addWidget(self.timer_input)
+        timer_time_layout.addWidget(self.time_unit_combo)
+        timer_time_layout.addStretch()
+        timer_inner_layout.addWidget(timer_time_frame)
+
+        # 第二行：控制按钮（运行、暂停/继续、取消）
+        timer_btn_frame = QFrame()
+        timer_btn_layout = QHBoxLayout(timer_btn_frame)
+        timer_btn_layout.setContentsMargins(0, 0, 0, 0)
 
         self.timer_run_btn = QPushButton("运行")
         self.timer_run_btn.setFont(QFont("Microsoft YaHei", 16))
         self.timer_run_btn.clicked.connect(self.start_timed_run)
 
-        self.timer_pause_btn = QPushButton("暂停")
-        self.timer_pause_btn.setFont(QFont("Microsoft YaHei", 16))
-        self.timer_pause_btn.clicked.connect(self.pause_timed_run)
-        self.timer_pause_btn.setEnabled(False)
-
-        self.timer_resume_btn = QPushButton("继续")
-        self.timer_resume_btn.setFont(QFont("Microsoft YaHei", 16))
-        self.timer_resume_btn.clicked.connect(self.resume_timed_run)
-        self.timer_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn = QPushButton("暂停")
+        self.timer_pause_resume_btn.setFont(QFont("Microsoft YaHei", 16))
+        self.timer_pause_resume_btn.clicked.connect(self._toggle_pause_resume)
+        self.timer_pause_resume_btn.setEnabled(False)
 
         self.timer_cancel_btn = QPushButton("取消")
         self.timer_cancel_btn.setFont(QFont("Microsoft YaHei", 16))
         self.timer_cancel_btn.clicked.connect(self.cancel_timed_run)
         self.timer_cancel_btn.setEnabled(False)
 
-        btn_layout.addWidget(self.timer_run_btn)
-        btn_layout.addWidget(self.timer_pause_btn)
-        btn_layout.addWidget(self.timer_resume_btn)
-        btn_layout.addWidget(self.timer_cancel_btn)
+        timer_btn_layout.addWidget(self.timer_run_btn)
+        timer_btn_layout.addWidget(self.timer_pause_resume_btn)
+        timer_btn_layout.addWidget(self.timer_cancel_btn)
+        timer_inner_layout.addWidget(timer_btn_frame)
 
-        timer_layout.addWidget(timer_label)
-        timer_layout.addWidget(self.timer_input)
-        timer_layout.addWidget(self.time_unit_combo)
-        timer_layout.addWidget(btn_container)
-        layout.addWidget(timer_frame)
+        bottom_layout.addWidget(timer_group)
+
+        layout.addWidget(bottom_frame)
 
         # 定时器相关初始化
         self.timer = QTimer(self)
@@ -244,10 +327,9 @@ class ManualMixin:
         self.timer.start(1000)
         self.timer_run_btn.setEnabled(False)
         self.update_status_message()
-        self.timer_run_btn.setEnabled(False)
-        self.timer_pause_btn.setEnabled(True)
+        self.timer_pause_resume_btn.setEnabled(True)
+        self.timer_pause_resume_btn.setText("暂停")
         self.timer_cancel_btn.setEnabled(True)
-        self.timer_resume_btn.setEnabled(False)
         self.is_paused = False
 
     def send_continuous_run_command(self):
@@ -282,6 +364,13 @@ class ManualMixin:
         time_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
         self.status_bar.showMessage(f"运行中 - 剩余时间: {time_str}")
 
+    def _toggle_pause_resume(self):
+        """暂停/继续按钮切换逻辑"""
+        if self.is_paused:
+            self.resume_timed_run()
+        else:
+            self.pause_timed_run()
+
     def pause_timed_run(self):
         command = "".join([f"{motor}DFV0J0" for motor in ["X", "Y", "Z", "A"]])
         self.send_command(command + "\r\n")
@@ -289,8 +378,7 @@ class ManualMixin:
         self.is_paused = True
         self.paused_seconds = self.remaining_seconds
 
-        self.timer_pause_btn.setEnabled(False)
-        self.timer_resume_btn.setEnabled(True)
+        self.timer_pause_resume_btn.setText("继续")
         self.status_bar.showMessage(
             f"运行已暂停，剩余时间: {self.format_time(self.paused_seconds)}"
         )
@@ -302,8 +390,7 @@ class ManualMixin:
         self.timer.start(1000)
         self.is_paused = False
 
-        self.timer_pause_btn.setEnabled(True)
-        self.timer_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn.setText("暂停")
         self.update_status_message()
 
     def cancel_timed_run(self):
@@ -313,8 +400,8 @@ class ManualMixin:
         self.is_paused = False
 
         self.timer_run_btn.setEnabled(True)
-        self.timer_pause_btn.setEnabled(False)
-        self.timer_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn.setText("暂停")
         self.timer_cancel_btn.setEnabled(False)
         self.status_bar.showMessage("运行已取消")
 
@@ -326,8 +413,8 @@ class ManualMixin:
     def stop_timed_run(self):
         self.timer.stop()
         self.timer_run_btn.setEnabled(True)
-        self.timer_pause_btn.setEnabled(False)
-        self.timer_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn.setEnabled(False)
+        self.timer_pause_resume_btn.setText("暂停")
         self.timer_cancel_btn.setEnabled(False)
         self.status_bar.showMessage("定时运行完成")
 
@@ -425,3 +512,54 @@ class ManualMixin:
                         break
 
         self.log(f"手动预设 '{name}' 已加载")
+
+    # ================= 进样泵控制方法 =================
+
+    def _on_pump_toggle(self, state: int) -> None:
+        """进样泵启停开关切换（IOSSwitch）。
+
+        Args:
+            state: 开关状态（Qt.Checked 或 Qt.Unchecked）
+        """
+        enabled = state == Qt.CheckState.Checked.value
+        if not self.serial_port or not self.serial_port.is_open:
+            self.log("进样泵控制失败：串口未连接")
+            self.pump_enable_switch.blockSignals(True)
+            self.pump_enable_switch.setChecked(False)
+            self.pump_enable_switch.blockSignals(False)
+            return
+
+        if enabled:
+            # 开启时先设置转速再启动
+            speed = self.pump_speed_spinbox.value()
+            self.send_command(f"PUMP:SPD:{speed}\r\n")
+            self.send_command("PUMP:ON\r\n")
+            self.log(f"进样泵启动，转速: {speed}%")
+        else:
+            self.send_command("PUMP:OFF\r\n")
+            self.log("进样泵停止")
+
+    def _on_pump_speed_changed(self, value: int) -> None:
+        """进样泵转速数值框变化。
+
+        Args:
+            value: 数值框值 (0-100)
+        """
+        # 仅在泵已启动时实时发送转速
+        if hasattr(self, "pump_enable_switch") and self.pump_enable_switch.isChecked():
+            self._send_pump_speed(value)
+
+    def _set_pump_speed_preset(self, speed: int) -> None:
+        """设置进样泵预设速度。"""
+        self.pump_speed_spinbox.setValue(speed)
+
+    def _send_pump_speed(self, speed: int) -> None:
+        """发送进样泵转速设置指令。
+
+        Args:
+            speed: 转速百分比 (0-100)
+        """
+        if not self.serial_port or not self.serial_port.is_open:
+            return
+
+        self.send_command(f"PUMP:SPD:{speed}\r\n")

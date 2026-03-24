@@ -94,6 +94,9 @@ class SerialMixin:
             self.serial_reader.angle_packet_received.connect(
                 self.handle_angle_packet, Qt.ConnectionType.QueuedConnection
             )
+            self.serial_reader.spectro_packet_received.connect(
+                self.handle_spectro_packet, Qt.ConnectionType.QueuedConnection
+            )
             self.serial_reader.start()
 
             if hasattr(self, "_chart_update_timer"):
@@ -101,6 +104,8 @@ class SerialMixin:
 
             # 自动启动实时角度流
             try:
+                # 先同步 I2C 映射配置
+                self._sync_i2c_mapping()
                 self.serial_port.write(b"ANGLESTREAM_START\r\n")
             except Exception:
                 pass
@@ -168,6 +173,10 @@ class SerialMixin:
                 reader.angle_packet_received.disconnect()
             except (TypeError, RuntimeError):
                 pass
+            try:
+                reader.spectro_packet_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
 
         # 停止读取线程
         if reader is not None:
@@ -185,6 +194,29 @@ class SerialMixin:
         self.connect_btn.setText("打开串口")
         self.log("串口已关闭")
         self.status_bar.showMessage("串口已关闭")
+
+    def _sync_i2c_mapping(self) -> None:
+        """从设置中读取 I2C 通道映射并发送给下位机。"""
+        try:
+            from src.config.constants import DEFAULT_I2C_MAPPING
+            import json, os
+
+            mapping = dict(DEFAULT_I2C_MAPPING)
+            # 尝试从 settings.json 加载
+            if hasattr(self, "settings_file") and os.path.exists(self.settings_file):
+                with open(self.settings_file, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                saved = settings.get("i2c_mapping", {})
+                if saved:
+                    mapping = saved
+
+            angles = mapping.get("angles", {"X": 0, "Y": 3, "Z": 4, "A": 7})
+            spec = mapping.get("spectro_channel", 2)
+            cmd = f"I2CMAP:X={angles['X']},Y={angles['Y']},Z={angles['Z']},A={angles['A']},SPEC={spec}\r\n"
+            self.serial_port.write(cmd.encode("utf-8"))
+            self.log(f"已同步I2C映射: {cmd.strip()}")
+        except Exception as e:
+            self.log(f"同步I2C映射失败: {e}")
 
     def send_command(self, command: str) -> bool:
         """发送串口指令。

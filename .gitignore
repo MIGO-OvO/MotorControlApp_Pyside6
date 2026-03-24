@@ -19,6 +19,9 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+build\
+dist\
+docs/
 
 # Virtual Environment
 venv/
@@ -52,3 +55,5 @@ exportToHTML/
 *.tmp
 *.bak
 *.orig
+build/main/Analysis-00.toc
+/build
