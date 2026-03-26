@@ -16,6 +16,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from src.config.constants import BUTTON_SECONDARY, BUTTON_TERTIARY, BUTTON_DANGER
 from src.ui.widgets import IOSSwitch
 
 
@@ -48,10 +50,14 @@ class ManualMixin:
         """初始化手动控制标签页的UI。"""
         layout = QVBoxLayout(self.manual_tab)
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(14)
 
         # 微泵控制区
         motor_frame = QFrame()
         grid_layout = QGridLayout(motor_frame)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setHorizontalSpacing(12)
+        grid_layout.setVerticalSpacing(12)
         self.motor_widgets = {}
 
         # 存储手动控制页的GroupBox引用，用于刷新标题
@@ -73,36 +79,38 @@ class ManualMixin:
             )
 
             vbox = QVBoxLayout(group)
-            vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vbox.setContentsMargins(14, 12, 14, 14)
+            vbox.setSpacing(10)
+            vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
 
             # 启用和持续开关
             switch_frame = QFrame()
             hbox = QHBoxLayout(switch_frame)
             hbox.setContentsMargins(0, 0, 0, 0)
-            hbox.addStretch()
+            hbox.setSpacing(12)
 
             enable_label = QLabel("启用")
             enable_label.setFont(QFont("Microsoft YaHei", 16))
-            enable_check = IOSSwitch()
+            enable_check = IOSSwitch(accessible_name=f"微泵{motor}启用开关")
 
             continuous_label = QLabel("持续")
             continuous_label.setFont(QFont("Microsoft YaHei", 16))
-            continuous_check = IOSSwitch()
+            continuous_check = IOSSwitch(accessible_name=f"微泵{motor}持续运转开关")
 
             hbox.addWidget(enable_label)
             hbox.addWidget(enable_check)
             hbox.addSpacing(16)
             hbox.addWidget(continuous_label)
             hbox.addWidget(continuous_check)
-            hbox.addStretch()
-            vbox.addWidget(switch_frame, alignment=Qt.AlignmentFlag.AlignCenter)
+            hbox.addStretch(1)
+            vbox.addWidget(switch_frame)
 
             # 方向选择
             dir_group = QButtonGroup(self)
             dir_frame = QFrame()
             hbox_dir = QHBoxLayout(dir_frame)
             hbox_dir.setContentsMargins(0, 0, 0, 0)
-            hbox_dir.addStretch()
+            hbox_dir.setSpacing(20)
             forward_btn = QRadioButton("正转")
             backward_btn = QRadioButton("反转")
             forward_btn.setFont(QFont("Microsoft YaHei", 16))
@@ -111,25 +119,34 @@ class ManualMixin:
             dir_group.addButton(backward_btn)
             forward_btn.setChecked(True)
             hbox_dir.addWidget(forward_btn)
-            hbox_dir.addSpacing(20)
             hbox_dir.addWidget(backward_btn)
-            hbox_dir.addStretch()
-            vbox.addWidget(dir_frame, alignment=Qt.AlignmentFlag.AlignCenter)
+            hbox_dir.addStretch(1)
+            vbox.addWidget(dir_frame)
 
-            # 参数输入
-            speed_entry = QLineEdit()
-            speed_entry.setPlaceholderText("速度值 (RPM)")
+            # H4: 参数输入改为受约束控件
+            speed_entry = QSpinBox()
+            speed_entry.setRange(0, 100)
+            speed_entry.setValue(5)
+            speed_entry.setSuffix(" RPM")
             speed_entry.setFont(QFont("Microsoft YaHei", 16))
-            speed_entry.setFixedHeight(40)
+            speed_entry.setFixedHeight(42)
+            speed_entry.setMinimumWidth(160)
             speed_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            vbox.addWidget(speed_entry, alignment=Qt.AlignmentFlag.AlignCenter)
+            speed_entry.setToolTip("电机转速范围: 0-100 RPM")
+            vbox.addWidget(speed_entry)
 
-            angle_entry = QLineEdit()
-            angle_entry.setPlaceholderText("角度")
+            angle_entry = QDoubleSpinBox()
+            angle_entry.setRange(0, 99999)
+            angle_entry.setDecimals(1)
+            angle_entry.setSingleStep(1.0)
+            angle_entry.setValue(0)
+            angle_entry.setSuffix(" °")
             angle_entry.setFont(QFont("Microsoft YaHei", 16))
-            angle_entry.setFixedHeight(40)
+            angle_entry.setFixedHeight(42)
+            angle_entry.setMinimumWidth(160)
             angle_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            vbox.addWidget(angle_entry, alignment=Qt.AlignmentFlag.AlignCenter)
+            angle_entry.setToolTip("转动角度 (度)")
+            vbox.addWidget(angle_entry)
 
             self.motor_widgets[motor] = {
                 "enable": enable_check,
@@ -143,66 +160,78 @@ class ManualMixin:
 
         layout.addWidget(motor_frame)
 
-        # 控制按钮区
-        control_frame = QFrame()
-        hbox = QHBoxLayout(control_frame)
+        # 主操作区
+        action_group = QGroupBox("手动操作")
+        action_group.setFont(QFont("Microsoft YaHei", 16))
+        action_layout = QHBoxLayout(action_group)
+        action_layout.setContentsMargins(14, 12, 14, 12)
+        action_layout.setSpacing(16)
 
         send_btn = QPushButton("发送指令")
         send_btn.setFont(QFont("Microsoft YaHei", 16))
-        send_btn.setFixedHeight(40)
+        send_btn.setFixedHeight(44)
+        send_btn.setMinimumWidth(180)
         send_btn.clicked.connect(self.send_manual_command)
-        hbox.addWidget(send_btn)
+        action_layout.addWidget(send_btn, 0, Qt.AlignmentFlag.AlignTop)
 
-        # 预设管理
-        preset_frame = QFrame()
-        preset_layout = QHBoxLayout(preset_frame)
+        preset_group = QFrame()
+        preset_layout = QHBoxLayout(preset_group)
+        preset_layout.setContentsMargins(0, 0, 0, 0)
+        preset_layout.setSpacing(10)
         preset_lbl = QLabel("手动预设:")
         preset_lbl.setFont(QFont("Microsoft YaHei", 16))
         self.manual_preset_combo = QComboBox()
         self.manual_preset_combo.setFont(QFont("Microsoft YaHei", 16))
-        self.manual_preset_combo.setFixedWidth(150)
+        self.manual_preset_combo.setMinimumWidth(180)
 
         load_btn = QPushButton("加载")
         load_btn.setFont(QFont("Microsoft YaHei", 16))
+        load_btn.setStyleSheet(BUTTON_SECONDARY)
         load_btn.clicked.connect(self.load_manual_preset)
 
         save_btn = QPushButton("保存")
         save_btn.setFont(QFont("Microsoft YaHei", 16))
+        save_btn.setStyleSheet(BUTTON_SECONDARY)
         save_btn.clicked.connect(self.save_manual_preset)
 
         del_manual_btn = QPushButton("删除")
+        del_manual_btn.setStyleSheet(BUTTON_TERTIARY)
         del_manual_btn.clicked.connect(lambda: self.delete_preset("manual"))
 
+        for btn in [load_btn, save_btn, del_manual_btn]:
+            btn.setFixedHeight(40)
+
         preset_layout.addWidget(preset_lbl)
-        preset_layout.addWidget(self.manual_preset_combo)
+        preset_layout.addWidget(self.manual_preset_combo, 1)
         preset_layout.addWidget(load_btn)
         preset_layout.addWidget(save_btn)
         preset_layout.addWidget(del_manual_btn)
-        hbox.addWidget(preset_frame)
+        action_layout.addWidget(preset_group, 1)
 
-        layout.addWidget(control_frame)
+        layout.addWidget(action_group)
 
         # ================= 进样泵控制 + 定时运行（同行布局） =================
         bottom_frame = QFrame()
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(10)
+        bottom_layout.setSpacing(12)
 
         # --- 左侧：进样泵控制 ---
         pump_group = QGroupBox("进样泵控制")
         pump_group.setFont(QFont("Microsoft YaHei", 16))
         pump_inner_layout = QVBoxLayout(pump_group)
+        pump_inner_layout.setContentsMargins(14, 12, 14, 14)
         pump_inner_layout.setSpacing(10)
 
         # 第一行：开关 + 转速输入，整体居中
         pump_row1_frame = QFrame()
         pump_row1_layout = QHBoxLayout(pump_row1_frame)
         pump_row1_layout.setContentsMargins(0, 0, 0, 0)
-        pump_row1_layout.addStretch()
+        pump_row1_layout.setSpacing(12)
 
         pump_title_label = QLabel("进样泵")
         pump_title_label.setFont(QFont("Microsoft YaHei", 16))
-        self.pump_enable_switch = IOSSwitch()
+        self.pump_enable_switch = IOSSwitch(accessible_name="进样泵启用开关")
         self.pump_enable_switch.stateChanged.connect(self._on_pump_toggle)
 
         self.pump_speed_spinbox = QSpinBox()
@@ -216,16 +245,16 @@ class ManualMixin:
 
         pump_row1_layout.addWidget(pump_title_label)
         pump_row1_layout.addWidget(self.pump_enable_switch)
-        pump_row1_layout.addSpacing(18)
+        pump_row1_layout.addSpacing(12)
         pump_row1_layout.addWidget(self.pump_speed_spinbox)
-        pump_row1_layout.addStretch()
+        pump_row1_layout.addStretch(1)
         pump_inner_layout.addWidget(pump_row1_frame)
 
         # 第二行：预设速度按钮，均匀分布且居中
         pump_row2_frame = QFrame()
         pump_row2_layout = QHBoxLayout(pump_row2_frame)
         pump_row2_layout.setContentsMargins(0, 0, 0, 0)
-        pump_row2_layout.addStretch()
+        pump_row2_layout.setSpacing(8)
         for preset in [25, 50, 75, 100]:
             preset_btn = QPushButton(f"{preset}%")
             preset_btn.setFont(QFont("Microsoft YaHei", 14))
@@ -236,13 +265,14 @@ class ManualMixin:
         pump_row2_layout.addStretch()
         pump_inner_layout.addWidget(pump_row2_frame)
 
-        bottom_layout.addWidget(pump_group)
+        bottom_layout.addWidget(pump_group, 1)
 
         # --- 右侧：定时运行控制 ---
         timer_group = QGroupBox("定时运行")
         timer_group.setFont(QFont("Microsoft YaHei", 16))
         timer_inner_layout = QVBoxLayout(timer_group)
-        timer_inner_layout.setSpacing(8)
+        timer_inner_layout.setContentsMargins(14, 12, 14, 14)
+        timer_inner_layout.setSpacing(10)
 
         # 第一行：时间输入
         timer_time_frame = QFrame()
@@ -252,10 +282,14 @@ class ManualMixin:
         timer_label = QLabel("时长:")
         timer_label.setFont(QFont("Microsoft YaHei", 16))
 
-        self.timer_input = QLineEdit()
-        self.timer_input.setPlaceholderText("时长")
+        # H4: 时长输入改为受约束控件
+        self.timer_input = QDoubleSpinBox()
+        self.timer_input.setRange(0.1, 99999)
+        self.timer_input.setDecimals(1)
+        self.timer_input.setValue(10)
         self.timer_input.setFont(QFont("Microsoft YaHei", 16))
-        self.timer_input.setFixedWidth(100)
+        self.timer_input.setFixedWidth(120)
+        self.timer_input.setToolTip("定时运行时长")
 
         self.time_unit_combo = QComboBox()
         self.time_unit_combo.addItems(["秒", "分钟", "小时"])
@@ -292,7 +326,7 @@ class ManualMixin:
         timer_btn_layout.addWidget(self.timer_cancel_btn)
         timer_inner_layout.addWidget(timer_btn_frame)
 
-        bottom_layout.addWidget(timer_group)
+        bottom_layout.addWidget(timer_group, 1)
 
         layout.addWidget(bottom_frame)
 
@@ -305,7 +339,7 @@ class ManualMixin:
 
     def start_timed_run(self):
         try:
-            duration = float(self.timer_input.text())
+            duration = self.timer_input.value()
             unit = self.time_unit_combo.currentText()
 
             if unit == "分钟":
@@ -337,10 +371,7 @@ class ManualMixin:
         for motor in ["X", "Y", "Z", "A"]:
             widgets = self.motor_widgets[motor]
             if widgets["enable"].isChecked():
-                speed = widgets["speed"].text()
-                if not speed.isdigit():
-                    QMessageBox.critical(self, "错误", f"电机{motor}速度值无效")
-                    return False
+                speed = str(widgets["speed"].value())
                 direction = "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
                 command += f"{motor}E{direction}V{speed}JG"
 
@@ -440,8 +471,8 @@ class ManualMixin:
                     "direction": (
                         "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
                     ),
-                    "speed": widgets["speed"].text() or "0",
-                    "angle": widgets["angle"].text() or "0",
+                    "speed": str(widgets["speed"].value()),
+                    "angle": str(widgets["angle"].value()),
                     "continuous": widgets["continuous"].isChecked(),
                 }
 
@@ -466,8 +497,8 @@ class ManualMixin:
             preset_data[motor] = {
                 "enable": widgets["enable"].isChecked(),
                 "direction": "F" if widgets["direction"].checkedButton().text() == "正转" else "B",
-                "speed": widgets["speed"].text(),
-                "angle": widgets["angle"].text(),
+                "speed": str(widgets["speed"].value()),
+                "angle": str(widgets["angle"].value()),
                 "continuous": widgets["continuous"].isChecked(),
             }
 
@@ -494,8 +525,8 @@ class ManualMixin:
                 if isinstance(enable_val, str):
                     enable_val = enable_val == "E" or enable_val.lower() == "true"
                 widgets["enable"].setChecked(bool(enable_val))
-                widgets["speed"].setText(str(data.get("speed", "")))
-                widgets["angle"].setText(str(data.get("angle", "")))
+                widgets["speed"].setValue(int(float(data.get("speed", 0))))
+                widgets["angle"].setValue(float(data.get("angle", 0)))
                 # continuous也需要类型转换
                 continuous_val = data.get("continuous", False)
                 if isinstance(continuous_val, str):

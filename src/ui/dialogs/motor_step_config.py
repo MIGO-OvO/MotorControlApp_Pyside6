@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -43,7 +44,9 @@ class MotorStepConfig(QDialog):
         self.parent = weakref.ref(parent)
         self.step_params = initial_params or {}
         self.setWindowTitle(f"步骤 {step_num} 参数配置")
-        self.setFixedSize(500, 780)
+        # H3: 可调整大小，设置合理最小尺寸
+        self.setMinimumSize(450, 600)
+        self.resize(500, 780)
         self.setWindowModality(Qt.ApplicationModal)
         self.init_ui()
         self.load_initial_params()
@@ -105,17 +108,25 @@ class MotorStepConfig(QDialog):
             hbox.addWidget(backward_btn)
             vbox.addWidget(dir_frame)
 
-            # 速度和角度输入
-            speed_entry = QLineEdit()
-            speed_entry.setPlaceholderText("速度值 (RPM)")
+            # H4: 速度和角度输入改为受约束控件
+            speed_entry = QSpinBox()
+            speed_entry.setRange(0, 100)
+            speed_entry.setValue(5)
+            speed_entry.setSuffix(" RPM")
             speed_entry.setFont(QFont("Microsoft YaHei", 16))
             speed_entry.setFixedHeight(40)
+            speed_entry.setToolTip("电机转速范围: 0-100 RPM")
             vbox.addWidget(speed_entry)
 
-            angle_entry = QLineEdit()
-            angle_entry.setPlaceholderText("角度值")
+            angle_entry = QDoubleSpinBox()
+            angle_entry.setRange(0, 99999)
+            angle_entry.setDecimals(1)
+            angle_entry.setSingleStep(1.0)
+            angle_entry.setValue(0)
+            angle_entry.setSuffix(" °")
             angle_entry.setFont(QFont("Microsoft YaHei", 16))
             angle_entry.setFixedHeight(40)
+            angle_entry.setToolTip("转动角度 (度)")
             vbox.addWidget(angle_entry)
 
             self.widgets[motor] = {
@@ -169,9 +180,15 @@ class MotorStepConfig(QDialog):
         hbox = QHBoxLayout(interval_frame)
         interval_lbl = QLabel("间隔时间(s):")
         interval_lbl.setFont(QFont("Microsoft YaHei", 16))
-        self.interval_entry = QLineEdit()
+        self.interval_entry = QDoubleSpinBox()
+        self.interval_entry.setRange(0, 99999)
+        self.interval_entry.setDecimals(1)
+        self.interval_entry.setSingleStep(0.5)
+        self.interval_entry.setValue(5.0)
+        self.interval_entry.setSuffix(" s")
         self.interval_entry.setFont(QFont("Microsoft YaHei", 16))
         self.interval_entry.setFixedHeight(40)
+        self.interval_entry.setToolTip("步骤执行后等待的间隔时间 (秒)")
         hbox.addWidget(interval_lbl)
         hbox.addWidget(self.interval_entry)
         layout.addWidget(interval_frame, 4, 0, 1, 2)
@@ -201,8 +218,8 @@ class MotorStepConfig(QDialog):
                     widgets["direction"].buttons()[0].setChecked(True)
                 else:
                     widgets["direction"].buttons()[1].setChecked(True)
-                widgets["speed"].setText(params.get("speed", ""))
-                widgets["angle"].setText(params.get("angle", ""))
+                widgets["speed"].setValue(int(float(params.get("speed", 0))))
+                widgets["angle"].setValue(float(params.get("angle", 0)))
 
             # 加载进样泵参数
             pump_params = self.step_params.get("pump", {})
@@ -213,7 +230,7 @@ class MotorStepConfig(QDialog):
 
             # 转换为秒显示
             interval_ms = self.step_params.get("interval", 0)
-            self.interval_entry.setText(str(interval_ms / 1000.0))
+            self.interval_entry.setValue(interval_ms / 1000.0)
 
     def save_params(self):
         """保存参数"""
@@ -224,18 +241,8 @@ class MotorStepConfig(QDialog):
                 enable = "E" if widgets["enable"].isChecked() else "D"
                 direction = "F" if widgets["direction"].checkedButton().text() == "正转" else "B"
 
-                speed_text = widgets["speed"].text().strip()
-                speed = (
-                    "0" if not speed_text else f"{float(speed_text):.1f}".rstrip("0").rstrip(".")
-                )
-
-                angle_text = widgets["angle"].text().strip().upper()
-                if not angle_text:
-                    angle = "0"
-                elif angle_text == "G":
-                    raise ValueError("自动化步骤不再支持角度 'G'，请填写数值")
-                else:
-                    angle = f"{float(angle_text):.3f}".rstrip("0").rstrip(".")
+                speed = str(widgets["speed"].value())
+                angle = f"{widgets['angle'].value():.3f}".rstrip("0").rstrip(".")
 
                 params[motor] = {
                     "enable": enable,
@@ -250,9 +257,8 @@ class MotorStepConfig(QDialog):
                 "speed": self.pump_speed_spinbox.value(),
             }
 
-            interval_text = self.interval_entry.text().strip()
             # 转换为毫秒保存
-            params["interval"] = 5000 if not interval_text else int(float(interval_text) * 1000)
+            params["interval"] = int(self.interval_entry.value() * 1000)
 
             self.step_params = params
             self.accept()

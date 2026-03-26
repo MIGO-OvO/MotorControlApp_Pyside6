@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 from src.config.constants import (
     ADS_AIN_OPTIONS, ADS_GAIN_OPTIONS, ADS_SUPPORTED_RATES,
     ADS_VREF_OPTIONS, DEFAULT_ADS_CONFIG,
+    COLOR_PRIMARY, COLOR_TEXT_SECONDARY,
+    BUTTON_SECONDARY, BUTTON_DANGER, BUTTON_SUCCESS,
 )
 try:
     import pyqtgraph as pg
@@ -80,8 +82,6 @@ class SpectroMixin:
         self.spectro_rate_combo.setCurrentText(str(DEFAULT_ADS_CONFIG.get("adc_rate", 90)))
         self.spectro_publish_spin = QSpinBox(); self.spectro_publish_spin.setRange(1, 200)
         self.spectro_publish_spin.setValue(DEFAULT_ADS_CONFIG.get("publish_rate", 50))
-        layout.addRow("TCA 通道:", self.spectro_tca_channel_spin)
-        layout.addRow("ADS 地址:", self.spectro_ads_addr_combo)
         layout.addRow("参考源:", self.spectro_vref_combo)
         layout.addRow("增益:", self.spectro_gain_combo)
         layout.addRow("ADC 数据率:", self.spectro_rate_combo)
@@ -91,13 +91,13 @@ class SpectroMixin:
     def _spectro_create_measurement_group(self, parent_layout):
         group = QGroupBox("实时测量"); layout = QFormLayout(); layout.setSpacing(8)
         self.spectro_voltage_value = QLabel("0.0000 V")
-        self.spectro_voltage_value.setStyleSheet("font-size: 20px; color: #007AFF; font-weight: bold;")
+        self.spectro_voltage_value.setStyleSheet(f"font-size: 20px; color: {COLOR_PRIMARY}; font-weight: bold;")
         self.spectro_absorbance_value = QLabel("0.0000")
-        self.spectro_absorbance_value.setStyleSheet("font-size: 20px; color: #FF2D55; font-weight: bold;")
+        self.spectro_absorbance_value.setStyleSheet("font-size: 20px; color: #CC1155; font-weight: bold;")
         self.spectro_ref_value = QLabel("未设置")
-        self.spectro_ref_value.setStyleSheet("font-size: 16px; color: #5856D6;")
+        self.spectro_ref_value.setStyleSheet("font-size: 16px; color: #4745B5;")
         self.spectro_status_label = QLabel("就绪")
-        self.spectro_status_label.setStyleSheet("font-size: 14px; color: #8e8e93;")
+        self.spectro_status_label.setStyleSheet(f"font-size: 14px; color: {COLOR_TEXT_SECONDARY};")
         layout.addRow("电压:", self.spectro_voltage_value)
         layout.addRow("吸光度:", self.spectro_absorbance_value)
         layout.addRow("参考电压:", self.spectro_ref_value)
@@ -107,13 +107,17 @@ class SpectroMixin:
     def _spectro_create_control_buttons(self, parent_layout):
         group = QGroupBox("操作控制"); layout = QVBoxLayout(); layout.setSpacing(8)
         self.spectro_start_btn = QPushButton("开始采集")
+        self.spectro_start_btn.setToolTip("开始/停止ADS122C04连续采集")
         self.spectro_start_btn.clicked.connect(self._spectro_toggle_measurement)
         self.spectro_ref_btn = QPushButton("设置参考")
+        self.spectro_ref_btn.setToolTip("将当前电压均值设为吸光度计算的参考值")
         self.spectro_ref_btn.clicked.connect(self._spectro_set_reference)
         self.spectro_ref_btn.setEnabled(False)
         self.spectro_clear_btn = QPushButton("清除数据")
+        self.spectro_clear_btn.setToolTip("清除所有已采集的电压和吸光度数据")
         self.spectro_clear_btn.clicked.connect(self._spectro_clear_data)
         self.spectro_save_btn = QPushButton("保存数据")
+        self.spectro_save_btn.setToolTip("将采集数据导出为CSV文件")
         self.spectro_save_btn.clicked.connect(self._spectro_save_data)
         for btn in [self.spectro_start_btn, self.spectro_ref_btn, self.spectro_clear_btn, self.spectro_save_btn]:
             layout.addWidget(btn)
@@ -125,13 +129,13 @@ class SpectroMixin:
         vg = QGroupBox("电压 (V)"); vl = QVBoxLayout(vg)
         self.spectro_voltage_plot = pg.PlotWidget(); self.spectro_voltage_plot.setBackground("w")
         self.spectro_voltage_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.spectro_voltage_curve = self.spectro_voltage_plot.plot(pen=pg.mkPen(color="#007AFF", width=2))
+        self.spectro_voltage_curve = self.spectro_voltage_plot.plot(pen=pg.mkPen(color=COLOR_PRIMARY, width=2))
         self.spectro_voltage_plot.setMinimumHeight(200); vl.addWidget(self.spectro_voltage_plot)
         cl.addWidget(vg)
         ag = QGroupBox("吸光度 (Abs)"); al = QVBoxLayout(ag)
         self.spectro_absorbance_plot = pg.PlotWidget(); self.spectro_absorbance_plot.setBackground("w")
         self.spectro_absorbance_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.spectro_absorbance_curve = self.spectro_absorbance_plot.plot(pen=pg.mkPen(color="#FF2D55", width=2))
+        self.spectro_absorbance_curve = self.spectro_absorbance_plot.plot(pen=pg.mkPen(color="#CC1155", width=2))
         self.spectro_absorbance_plot.setMinimumHeight(200); al.addWidget(self.spectro_absorbance_plot)
         cl.addWidget(ag)
         scroll.setWidget(container); parent_layout.addWidget(scroll)
@@ -224,7 +228,16 @@ class SpectroMixin:
             avg = float(np.mean(self.spectro_voltage_data[-10:]))
             self.spectro_reference_voltage = avg
             self.spectro_ref_value.setText(f"{avg:.4f} V")
+            self.spectro_status_label.setText("参考电压已设置")
             self.log(f"参考电压设置为 {avg:.4f} V")
+        else:
+            # M1: 明确反馈无法设置的原因
+            if not self.spectro_is_measuring:
+                self.spectro_status_label.setText("请先开始采集")
+                QMessageBox.information(self, "提示", "请先开始采集数据后再设置参考电压。")
+            elif not self.spectro_voltage_data:
+                self.spectro_status_label.setText("等待数据...")
+                QMessageBox.information(self, "提示", "尚无采集数据，请等待数据到达后再设置。")
 
     def _spectro_clear_data(self):
         self.spectro_voltage_data.clear()

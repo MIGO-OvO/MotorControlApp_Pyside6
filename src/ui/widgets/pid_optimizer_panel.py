@@ -28,6 +28,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.config.constants import (
+    BUTTON_SUCCESS, BUTTON_DANGER, BUTTON_SECONDARY, BUTTON_TERTIARY,
+    COLOR_SUCCESS, COLOR_DANGER, COLOR_PRIMARY, COLOR_TEXT_SECONDARY,
+)
+
 try:
     import pyqtgraph as pg
 
@@ -113,6 +118,7 @@ class PIDOptimizerPanel(QWidget):
         self.kp_input.setDecimals(4)
         self.kp_input.setSingleStep(0.01)
         self.kp_input.setValue(0.14)
+        self.kp_input.setToolTip("比例增益 (Proportional)\n控制响应速度，值越大响应越快但可能振荡\n推荐范围: 0.05~0.5")
         layout.addWidget(self.kp_input, 0, 1)
 
         # Ki
@@ -122,6 +128,7 @@ class PIDOptimizerPanel(QWidget):
         self.ki_input.setDecimals(5)
         self.ki_input.setSingleStep(0.001)
         self.ki_input.setValue(0.015)
+        self.ki_input.setToolTip("积分增益 (Integral)\n消除稳态误差，值过大可能导致积分饱和\n推荐范围: 0.005~0.05")
         layout.addWidget(self.ki_input, 1, 1)
 
         # Kd
@@ -131,6 +138,7 @@ class PIDOptimizerPanel(QWidget):
         self.kd_input.setDecimals(4)
         self.kd_input.setSingleStep(0.01)
         self.kd_input.setValue(0.06)
+        self.kd_input.setToolTip("微分增益 (Derivative)\n抑制振荡和过冲，对噪声敏感\n推荐范围: 0.02~0.15")
         layout.addWidget(self.kd_input, 2, 1)
 
         # 应用按钮
@@ -174,6 +182,7 @@ class PIDOptimizerPanel(QWidget):
         self.runs_input = QSpinBox()
         self.runs_input.setRange(1, 20)
         self.runs_input.setValue(5)
+        self.runs_input.setToolTip("每轮优化迭代中重复测试的次数\n取均值以减少随机误差")
         layout.addWidget(self.runs_input, 3, 1)
 
         # 最大迭代
@@ -181,6 +190,7 @@ class PIDOptimizerPanel(QWidget):
         self.max_iter_input = QSpinBox()
         self.max_iter_input.setRange(10, 200)
         self.max_iter_input.setValue(50)
+        self.max_iter_input.setToolTip("优化搜索的最大迭代次数\n迭代越多精度越高但耗时越长")
         layout.addWidget(self.max_iter_input, 4, 1)
 
         # 连接信号以更新时间预估
@@ -196,45 +206,51 @@ class PIDOptimizerPanel(QWidget):
         layout = QGridLayout(group)
         layout.setSpacing(10)
 
+        # L1: 替换emoji为纯文本, H6: 按钮层级
         # 第一行：主要控制
-        self.start_btn = QPushButton("▶ 开始优化")
+        self.start_btn = QPushButton("开始优化")
         self.start_btn.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
         self.start_btn.setFixedHeight(40)
-        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; border-radius: 4px;")
+        self.start_btn.setStyleSheet(BUTTON_SUCCESS)
+        self.start_btn.setToolTip("开始自动优化PID参数")
         self.start_btn.clicked.connect(self._on_start)
         layout.addWidget(self.start_btn, 0, 0, 1, 2) # 占据两列
 
         # 第二行：辅助控制
-        self.pause_btn = QPushButton("⏸ 暂停")
+        self.pause_btn = QPushButton("暂停")
         self.pause_btn.setFixedHeight(34)
         self.pause_btn.setEnabled(False)
+        self.pause_btn.setStyleSheet(BUTTON_SECONDARY)
         self.pause_btn.clicked.connect(self._on_pause)
         layout.addWidget(self.pause_btn, 1, 0)
 
-        self.stop_btn = QPushButton("⏹ 停止")
+        self.stop_btn = QPushButton("停止")
         self.stop_btn.setFixedHeight(34)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setStyleSheet("background-color: #f44336; color: white; border-radius: 4px;")
+        self.stop_btn.setStyleSheet(BUTTON_DANGER)
         self.stop_btn.clicked.connect(self._on_stop)
         layout.addWidget(self.stop_btn, 1, 1)
 
         # 第三行：调试与应用
-        self.single_test_btn = QPushButton("🔬 单次测试")
+        self.single_test_btn = QPushButton("单次测试")
         self.single_test_btn.setFixedHeight(34)
-        self.single_test_btn.setStyleSheet("background-color: #2196F3; color: white; border-radius: 4px;")
+        self.single_test_btn.setToolTip("使用当前PID参数执行一次测试")
         self.single_test_btn.clicked.connect(self._on_single_test)
         layout.addWidget(self.single_test_btn, 2, 0)
 
-        self.apply_best_btn = QPushButton("📥 应用最优")
+        self.apply_best_btn = QPushButton("应用最优")
         self.apply_best_btn.setFixedHeight(34)
         self.apply_best_btn.setEnabled(False)
+        self.apply_best_btn.setStyleSheet(BUTTON_SECONDARY)
+        self.apply_best_btn.setToolTip("将优化得到的最优参数应用到下位机")
         self.apply_best_btn.clicked.connect(self._on_apply_best)
         layout.addWidget(self.apply_best_btn, 2, 1)
-        
+
         # 第四行：导出与状态
-        self.export_btn = QPushButton("📊 导出数据")
+        self.export_btn = QPushButton("导出数据")
         self.export_btn.setFixedHeight(34)
         self.export_btn.setEnabled(False)
+        self.export_btn.setStyleSheet(BUTTON_TERTIARY)
         self.export_btn.clicked.connect(self._on_export)
         layout.addWidget(self.export_btn, 3, 0)
 
@@ -242,7 +258,7 @@ class PIDOptimizerPanel(QWidget):
         self.time_estimate_label = QLabel("预计: --")
         self.time_estimate_label.setFont(QFont("Microsoft YaHei", 9))
         self.time_estimate_label.setAlignment(Qt.AlignCenter)
-        self.time_estimate_label.setStyleSheet("color: #666;")
+        self.time_estimate_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
         layout.addWidget(self.time_estimate_label, 3, 1)
 
         parent_layout.addWidget(group)
@@ -263,13 +279,13 @@ class PIDOptimizerPanel(QWidget):
             self.score_plot.setLabel("bottom", "迭代次数")
 
             self.score_curve = self.score_plot.plot(
-                pen=pg.mkPen(color="#007AFF", width=2),
+                pen=pg.mkPen(color=COLOR_PRIMARY, width=2),
                 symbol="o",
                 symbolSize=5,
-                symbolBrush="#007AFF",
+                symbolBrush=COLOR_PRIMARY,
             )
             self.best_score_curve = self.score_plot.plot(
-                pen=pg.mkPen(color="#4CAF50", width=2, style=Qt.DashLine)
+                pen=pg.mkPen(color=COLOR_SUCCESS, width=2, style=Qt.DashLine)
             )
             layout.addWidget(self.score_plot)
         else:
@@ -325,11 +341,11 @@ class PIDOptimizerPanel(QWidget):
 
     def _on_pause(self):
         """暂停/恢复"""
-        if self.pause_btn.text() == "⏸ 暂停":
-            self.pause_btn.setText("▶ 继续")
+        if self.pause_btn.text() == "暂停":
+            self.pause_btn.setText("继续")
             self.pause_optimization.emit()
         else:
-            self.pause_btn.setText("⏸ 暂停")
+            self.pause_btn.setText("暂停")
             self.resume_optimization.emit()
 
     def _on_stop(self):
@@ -338,7 +354,7 @@ class PIDOptimizerPanel(QWidget):
         if hasattr(self, "_single_test_running") and self._single_test_running:
             self._single_test_running = False
             self.single_test_btn.setEnabled(True)
-            self.single_test_btn.setText("🔬 单次测试")
+            self.single_test_btn.setText("单次测试")
             self.stop_btn.setEnabled(False)
             self.status_label.setText("状态: 测试已停止")
 
@@ -353,7 +369,7 @@ class PIDOptimizerPanel(QWidget):
 
         self._single_test_running = True
         self.single_test_btn.setEnabled(False)
-        self.single_test_btn.setText("🔬 测试中...")
+        self.single_test_btn.setText("测试中...")
         self.stop_btn.setEnabled(True)  # 启用停止按钮
         self.status_label.setText("状态: 单次测试进行中...")
 
@@ -366,6 +382,8 @@ class PIDOptimizerPanel(QWidget):
             "test_motor": self.motor_combo.currentText(),
             "test_angle": self.angle_input.value(),
             "test_runs": self.runs_input.value(),
+            # C2修复：将方向选择传入单次测试配置
+            "direction": "F" if self.direction_combo.currentIndex() == 0 else "B",
         }
         self.single_test.emit(config)
 
@@ -373,7 +391,7 @@ class PIDOptimizerPanel(QWidget):
         """单次测试完成"""
         self._single_test_running = False
         self.single_test_btn.setEnabled(True)
-        self.single_test_btn.setText("🔬 单次测试")
+        self.single_test_btn.setText("单次测试")
         self.stop_btn.setEnabled(False)  # 禁用停止按钮
         self.status_label.setText("状态: 单次测试完成")
 
@@ -433,7 +451,7 @@ class PIDOptimizerPanel(QWidget):
         self.max_iter_input.setEnabled(not running)
 
         if running:
-            self.pause_btn.setText("⏸ 暂停")
+            self.pause_btn.setText("暂停")
 
     def _clear_history(self):
         """清空历史"""
@@ -562,9 +580,9 @@ class PIDOptimizerPanel(QWidget):
         if state == "finished" or state == "idle":
             self._set_running(False)
         elif state == "paused":
-            self.pause_btn.setText("▶ 继续")
+            self.pause_btn.setText("继续")
         elif state == "running":
-            self.pause_btn.setText("⏸ 暂停")
+            self.pause_btn.setText("暂停")
 
     @Slot(dict)
     def on_optimization_finished(self, result: dict):

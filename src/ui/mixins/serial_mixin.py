@@ -107,12 +107,17 @@ class SerialMixin:
                 # 先同步 I2C 映射配置
                 self._sync_i2c_mapping()
                 self.serial_port.write(b"ANGLESTREAM_START\r\n")
+                # C1修复：同步位置监控页的stream_btn状态
+                if hasattr(self, "stream_btn"):
+                    self.stream_btn.blockSignals(True)
+                    self.stream_btn.setChecked(True)
+                    self.stream_btn.blockSignals(False)
             except Exception:
                 pass
 
             self.connect_btn.setText("关闭串口")
             self.log(f"串口已连接 {port}@{baudrate}")
-            self.status_bar.showMessage(f"已连接 {port}@{baudrate}")
+            self.status_bar.showMessage(f"已连接 {port}@{baudrate}，实时角度流已自动开启")
         except serial.SerialException as e:
             QMessageBox.critical(self, "串口错误", f"串口连接失败: {e}")
         except Exception as e:
@@ -192,6 +197,11 @@ class SerialMixin:
                 self.serial_port = None
 
         self.connect_btn.setText("打开串口")
+        # C1修复：关闭串口时同步重置stream_btn状态
+        if hasattr(self, "stream_btn"):
+            self.stream_btn.blockSignals(True)
+            self.stream_btn.setChecked(False)
+            self.stream_btn.blockSignals(False)
         self.log("串口已关闭")
         self.status_bar.showMessage("串口已关闭")
 

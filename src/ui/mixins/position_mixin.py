@@ -15,7 +15,6 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -29,7 +28,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from src.config.constants import DEFAULT_I2C_MAPPING
+from src.config.constants import (
+    DEFAULT_I2C_MAPPING,
+    BUTTON_DANGER,
+    BUTTON_SECONDARY,
+    COLOR_PRIMARY,
+    COLOR_TEXT_SECONDARY,
+    COLOR_ACCENT_ORANGE,
+)
 from src.ui.widgets import IOSSwitch, MotorCircle
 
 
@@ -91,7 +97,7 @@ class PositionMixin:
 
             # 角度显示
             label = QLabel("0.000°", alignment=Qt.AlignCenter)
-            label.setStyleSheet("font-size: 24px; color: #007AFF;")
+            label.setStyleSheet(f"font-size: 24px; color: {COLOR_PRIMARY};")
             self.angle_labels[motor] = label
 
             # 零点标定按钮
@@ -104,7 +110,7 @@ class PositionMixin:
             # 偏移量显示
             offset_label = QLabel("偏移: 0.0°")
             offset_label.setAlignment(Qt.AlignCenter)
-            offset_label.setStyleSheet("color: #8e8e93; font-size: 11px;")
+            offset_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 11px;")
             self.offset_labels[motor] = offset_label
 
             # 复位开关
@@ -112,7 +118,7 @@ class PositionMixin:
             hbox = QHBoxLayout(switch_frame)
             hbox.setContentsMargins(0, 0, 0, 0)
             switch_label = QLabel("复位开关:")
-            switch = IOSSwitch()
+            switch = IOSSwitch(accessible_name=f"微泵{motor}复位开关")
             self.calibration_switches[motor] = switch
             hbox.addWidget(switch_label)
             hbox.addWidget(switch)
@@ -138,40 +144,31 @@ class PositionMixin:
         # 实时角度按钮
         self.stream_btn = QPushButton("实时角度")
         self.stream_btn.setCheckable(True)
+        self.stream_btn.setToolTip("开启/关闭实时角度数据流")
         self.stream_btn.clicked.connect(self.toggle_streaming)
 
         # 重置零点按钮
         self.reset_zero_btn = QPushButton("重置零点")
-        self.reset_zero_btn.setStyleSheet(
-            """
-            QPushButton {
-                font-size: 18px;
-                padding: 8px;
-                background-color: #ff3b30;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #e02d24;
-            }
-        """
-        )
+        self.reset_zero_btn.setStyleSheet(BUTTON_DANGER)
+        self.reset_zero_btn.setToolTip("将所有电机当前位置设为零点")
         self.reset_zero_btn.clicked.connect(self.reset_zero_offsets)
 
         # 重置偏差按钮
         self.reset_deviation_btn = QPushButton("重置偏差")
-        self.reset_deviation_btn.setStyleSheet(
-            """
-            QPushButton {
-                font-size: 18px;
-                padding: 8px;
-                background-color: #ff9500;
+        self.reset_deviation_btn.setToolTip("清除累计偏差数据并重新计算")
+        self.reset_deviation_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT_ORANGE};
                 color: white;
-            }
-            QPushButton:hover {
-                background-color: #e08600;
-            }
-        """
-        )
+                border: none;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: #8B4F00;
+            }}
+        """)
         self.reset_deviation_btn.clicked.connect(self.reset_deviation_data)
 
         for btn in [self.init_btn, self.stream_btn, self.reset_zero_btn, self.reset_deviation_btn]:
@@ -181,16 +178,11 @@ class PositionMixin:
 
         layout.addWidget(btn_frame)
 
-        # ============= I2C 通道映射 =============
-        self._create_i2c_mapping_group(layout)
+        # I2C 设置已迁移到左侧导航独立入口，这里只初始化底层数据控件。
+        self._init_i2c_mapping_controls()
 
-    def _create_i2c_mapping_group(self, parent_layout) -> None:
-        """创建 I2C 通道映射配置组。"""
-        group = QGroupBox("I2C 通道映射 (TCA9548A)")
-        group.setFont(QFont("Microsoft YaHei", 11))
-        form = QFormLayout()
-        form.setSpacing(6)
-
+    def _init_i2c_mapping_controls(self) -> None:
+        """初始化 I2C 通道映射控件（供设置弹窗与配置保存复用）。"""
         defaults = DEFAULT_I2C_MAPPING
         angles = defaults.get("angles", {"X": 0, "Y": 3, "Z": 4, "A": 7})
         spec_ch = defaults.get("spectro_channel", 2)
@@ -201,26 +193,15 @@ class PositionMixin:
             spin.setRange(0, 7)
             spin.setValue(angles.get(motor, 0))
             self.i2c_map_spins[motor] = spin
-            form.addRow(f"角度传感器 {motor}:", spin)
 
         spec_spin = QSpinBox()
         spec_spin.setRange(0, 7)
         spec_spin.setValue(spec_ch)
         self.i2c_map_spins["SPEC"] = spec_spin
-        form.addRow("分光 ADC:", spec_spin)
 
-        btn_row = QHBoxLayout()
-        read_btn = QPushButton("读取下位机配置")
-        read_btn.clicked.connect(self._i2c_read_from_device)
-        apply_btn = QPushButton("应用到下位机")
-        apply_btn.clicked.connect(self._i2c_apply_to_device)
-        btn_row.addWidget(read_btn)
-        btn_row.addWidget(apply_btn)
-
-        vbox = QVBoxLayout(group)
-        vbox.addLayout(form)
-        vbox.addLayout(btn_row)
-        parent_layout.addWidget(group)
+    def _create_i2c_mapping_group(self, parent_layout) -> None:
+        """兼容保留：I2C 设置已迁移到独立对话框。"""
+        self._init_i2c_mapping_controls()
 
     def _i2c_read_from_device(self) -> None:
         """向下位机查询当前 I2C 通道映射。"""
@@ -415,7 +396,7 @@ class PositionMixin:
             if motor in self.offset_labels:
                 self.offset_labels[motor].setText(f"偏移: {offset:.2f}°")
                 # 偏移量为0时显示灰色，非零时显示蓝色
-                color = "#8e8e93" if offset == 0.0 else "#007aff"
+                color = COLOR_TEXT_SECONDARY if offset == 0.0 else COLOR_PRIMARY
                 self.offset_labels[motor].setStyleSheet(f"color: {color}; font-size: 13px;")
 
     # ============= 微泵备注功能 =============

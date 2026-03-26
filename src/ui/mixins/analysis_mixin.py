@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from src.core.pid_analyzer import PIDStatus
 from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams
+from src.config.constants import BUTTON_TERTIARY, COLOR_TEXT_SECONDARY
 from src.ui.widgets import (
     AnalysisChart,
     PIDAnalysisChart,
@@ -82,18 +83,7 @@ class AnalysisMixin:
         control_layout.setContentsMargins(5, 5, 5, 5)
         control_layout.setSpacing(10)
 
-        button_style = """
-        QPushButton {
-            font-size: 12px;
-            padding: 5px 10px;
-            min-width: 80px;
-            max-height: 30px;
-            border-radius: 4px;
-        }
-        QPushButton:hover {
-            background-color: #e0e0e0;
-        }
-        """
+        button_style = BUTTON_TERTIARY
 
         action_buttons = [
             ("清空图表", self.clear_pid_chart),
@@ -152,10 +142,8 @@ class AnalysisMixin:
 
         layout.addWidget(self.analysis_sub_tabs)
 
-        # 兼容旧版图表（隐藏）
-        self.chart_view = QChartView(AnalysisChart())
-        self.chart_view.setVisible(False)
-        layout.addWidget(self.chart_view)
+        # M3: 移除隐藏的旧版图表，仅保留兼容属性
+        self.chart_view = None
 
     def _init_pid_optimizer(self):
         """初始化PID优化器"""

@@ -93,7 +93,7 @@ from PySide6.QtWidgets import (
 from serial.tools import list_ports
 
 # 导入重构后的组件
-from src.config.constants import MACOS_STYLE
+from src.config.constants import MACOS_STYLE, BUTTON_SECONDARY, BUTTON_TERTIARY, BUTTON_DANGER
 from src.config.settings import SettingsManager
 from src.core.automation_engine import AutomationThread
 from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
@@ -101,6 +101,7 @@ from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
 from src.hardware.daq_thread import ADSSession
 from src.hardware.serial_reader import SerialReader
 from src.ui.dialogs.motor_step_config import MotorStepConfig
+from src.ui.dialogs import I2CSettingsDialog
 
 # 导入 Mixin 模块
 from src.ui.mixins import (
@@ -184,7 +185,7 @@ class MotorControlApp(
         self.init_ui()
         self.update_preset_combos()
         self.setStyleSheet(MACOS_STYLE)
-        self.setMinimumSize(1280, 900)
+        self.setMinimumSize(1024, 720)
         self.resize(1280, 900)
         try:
             self.setWindowIcon(QIcon("resources/icons/meow.ico"))
@@ -244,7 +245,8 @@ class MotorControlApp(
 
         # 左侧导航栏
         self.nav_frame = QFrame()
-        self.nav_frame.setFixedWidth(220)  # 稍微加宽以容纳新标题
+        self.nav_frame.setMinimumWidth(180)
+        self.nav_frame.setMaximumWidth(260)
         self.nav_layout = QVBoxLayout(self.nav_frame)
         self.nav_layout.setContentsMargins(0, 0, 0, 0)
         self.nav_layout.setSpacing(8)
@@ -294,6 +296,11 @@ class MotorControlApp(
         self.spectro_btn.setFont(QFont("Microsoft YaHei", 13))
         self.spectro_btn.setFixedHeight(40)
         spectro_control_layout.addWidget(self.spectro_btn)
+
+        self.i2c_settings_btn = QPushButton("I2C设置")
+        self.i2c_settings_btn.setFont(QFont("Microsoft YaHei", 13))
+        self.i2c_settings_btn.setFixedHeight(40)
+        spectro_control_layout.addWidget(self.i2c_settings_btn)
         self.nav_layout.addWidget(spectro_control_group)
 
         # ================= 串口设置 =================
@@ -318,9 +325,10 @@ class MotorControlApp(
             widget.setFixedHeight(40)
             serial_layout.addWidget(widget)
 
-        # 操作按钮
+        # 操作按钮 - H6: 连接为Primary，刷新为Tertiary
         self.connect_btn = QPushButton("打开串口")
         refresh_btn = QPushButton("刷新端口")
+        refresh_btn.setStyleSheet(BUTTON_TERTIARY)
 
         for btn in [self.connect_btn, refresh_btn]:
             btn.setFont(QFont("Microsoft YaHei", 16))
@@ -369,19 +377,27 @@ class MotorControlApp(
 
         content_layout.addWidget(self.tab_widget)
 
-        # ================= 日志区域 =================
+        # ================= 日志区域 (M4: 可折叠 + 只读) =================
         log_group = QGroupBox("系统日志")
         log_group.setFont(QFont("Microsoft YaHei", 16))
+        log_group.setCheckable(True)  # M4: 可折叠
+        log_group.setChecked(True)
         log_layout = QVBoxLayout(log_group)
 
         self.log_text = QTextEdit()
-        self.log_text.setFont(QFont("Menlo", 11))
+        self.log_text.setFont(QFont("Cascadia Mono", 11))
+        self.log_text.setReadOnly(True)  # M4: 设为只读
+        self.log_text.setMaximumHeight(200)  # 限制日志区域高度
         log_layout.addWidget(self.log_text)
 
         clear_btn = QPushButton("清空日志")
-        clear_btn.setFont(QFont("Microsoft YaHei", 16))
+        clear_btn.setFont(QFont("Microsoft YaHei", 14))
+        clear_btn.setStyleSheet(BUTTON_TERTIARY)  # H6: 降级为Tertiary
         clear_btn.clicked.connect(self.clear_log)
         log_layout.addWidget(clear_btn)
+
+        # M4: 日志折叠/展开信号
+        log_group.toggled.connect(lambda checked: self.log_text.setVisible(checked) or clear_btn.setVisible(checked))
 
         content_layout.addWidget(log_group)
 
@@ -394,7 +410,8 @@ class MotorControlApp(
         self.auto_btn.clicked.connect(lambda: self.switch_tab(1))
         self.position_btn.clicked.connect(lambda: self.switch_tab(2))
         self.analysis_btn.clicked.connect(lambda: self.switch_tab(3))
-        self.spectro_btn.clicked.connect(lambda: self.switch_tab(4))  
+        self.spectro_btn.clicked.connect(lambda: self.switch_tab(4))
+        self.i2c_settings_btn.clicked.connect(self.open_i2c_settings_dialog)
 
         self.connect_btn.clicked.connect(self.toggle_serial)
         refresh_btn.clicked.connect(self.refresh_serial_ports)
@@ -406,6 +423,10 @@ class MotorControlApp(
 
 
 
+    def open_i2c_settings_dialog(self):
+        dialog = I2CSettingsDialog(self)
+        dialog.exec()
+
     def add_auto_calibration_switch(self):
         """在左侧导航栏添加 PID 精确控制开关和目标阈值输入"""
         auto_cal_group = QGroupBox("PID精确控制")
@@ -415,7 +436,7 @@ class MotorControlApp(
         switch_frame = QFrame()
         hbox = QHBoxLayout(switch_frame)
         auto_cal_label = QLabel("PID模式:")
-        self.auto_cal_switch = IOSSwitch()
+        self.auto_cal_switch = IOSSwitch(accessible_name="PID精确控制模式开关")
         hbox.addWidget(auto_cal_label)
         hbox.addWidget(self.auto_cal_switch)
         auto_cal_layout.addWidget(switch_frame)
@@ -447,10 +468,12 @@ class MotorControlApp(
             if 0.05 <= value <= 2.0:
                 self.pid_precision = value
                 self.calibration_amplitude = value
+                self.status_bar.showMessage(f"目标阈值已更新为 {value}°", 3000)
             else:
                 raise ValueError("超出范围")
         except ValueError:
             self.log("目标阈值无效，已重置为0.5°")
+            self.status_bar.showMessage("目标阈值无效(范围0.05~2.0)，已重置为0.5°", 5000)
             self.calibration_amp_input.setText("0.5")
             self.pid_precision = 0.5
             self.calibration_amplitude = 0.5
@@ -484,18 +507,6 @@ class MotorControlApp(
                 current_angle = data["current"].get(motor, 0)
                 self.motors[motor].set_angle(current_angle % 360)
                 self.angle_labels[motor].setText(f"{current_angle:.3f}°")
-
-            # 节流：每100ms更新一次图表
-            current_time = time.time()
-            if not hasattr(self, "_last_chart_update_time"):
-                self._last_chart_update_time = 0
-
-            if current_time - self._last_chart_update_time >= 0.1:
-                self._last_chart_update_time = current_time
-                try:
-                    self.chart_view.chart().update_data(data)
-                except Exception:
-                    pass
         except Exception as e:
             print(f"角度更新异常: {str(e)}")
 
