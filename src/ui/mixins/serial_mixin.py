@@ -242,7 +242,9 @@ class SerialMixin:
             return False
         try:
             with self.serial_lock:
+                command = command.rstrip("\r\n") + "\r\n"
                 self.serial_port.write(command.encode("utf-8"))
+                self.serial_port.flush()
             self.log(f"已发送指令: {command.strip()}")
             return True
         except Exception as e:
