@@ -228,6 +228,51 @@ class SerialMixin:
         except Exception as e:
             self.log(f"同步I2C映射失败: {e}")
 
+
+    @staticmethod
+    def _perform_handshake(conn: serial.Serial) -> tuple:
+        """向检测装置发送 HELLO? 握手并等待 DET_ID 响应。
+
+        NodeMCU-32S 的 DTR/RTS 自动复位电路会在串口打开时触发 ESP32
+        硬件复位。需要等待 bootloader + setup() 完成后再开始探测。
+
+        Args:
+            conn: 已打开的 serial.Serial 实例
+
+        Returns:
+            (True, identity_str) 或 (False, reason_str)
+        """
+        old_timeout = conn.timeout
+        conn.timeout = 0.1
+        # 等待 ESP32 完成 bootloader + setup()（约 500-800ms）
+        time.sleep(0.8)
+        conn.reset_input_buffer()
+        deadline = time.time() + HANDSHAKE_TIMEOUT
+        next_probe = 0.0
+        line = b""
+        try:
+            while time.time() < deadline:
+                if time.time() >= next_probe:
+                    conn.write(DETECTOR_HANDSHAKE_CMD.encode("utf-8"))
+                    conn.flush()
+                    next_probe = time.time() + HANDSHAKE_PROBE_INTERVAL
+                chunk = conn.read(1)
+                if not chunk:
+                    continue
+                if chunk in (b"\n", b"\r"):
+                    text = line.decode("utf-8", errors="ignore").strip()
+                    if text.startswith(DETECTOR_ID_PREFIX):
+                        return True, text
+                    line = b""
+                else:
+                    line += chunk
+                    if len(line) > 120:
+                        line = b""
+        finally:
+            conn.timeout = old_timeout
+        return False, "握手超时"
+
+
     def send_command(self, command: str) -> bool:
         """发送串口指令。
 
