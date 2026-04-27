@@ -491,6 +491,12 @@ COMMAND_TERMINATOR = "\r\n"
 ANGLE_REQUEST_COMMAND = "GETANGLE"
 ANGLE_RESPONSE_PREFIX = "ANGLE"
 
+# ==================== 设备握手 ====================
+DETECTOR_HANDSHAKE_CMD = "HELLO?\r\n"
+DETECTOR_ID_PREFIX = "DET_ID:USV_DETECTOR"
+HANDSHAKE_TIMEOUT = 2.5        # 握手总超时 (秒)
+HANDSHAKE_PROBE_INTERVAL = 0.5  # 每次重发 HELLO? 的间隔 (秒)
+
 # ==================== 方向映射 ====================
 DIRECTION_MAP = {"F": 1, "B": -1}  # 正转  # 反转
 

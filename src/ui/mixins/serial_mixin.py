@@ -20,6 +20,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from src.hardware.serial_reader import SerialReader
+from src.config.constants import (
+    DETECTOR_HANDSHAKE_CMD,
+    DETECTOR_ID_PREFIX,
+    HANDSHAKE_TIMEOUT,
+    HANDSHAKE_PROBE_INTERVAL,
+)
 
 
 class SerialMixin:
@@ -74,11 +80,26 @@ class SerialMixin:
             if not port:
                 raise serial.SerialException("未选择端口")
 
-            self.serial_port = serial.Serial(
-                port=port, baudrate=baudrate, timeout=1, write_timeout=1
-            )
+            self.serial_port = serial.Serial()
+            self.serial_port.port = port
+            self.serial_port.baudrate = baudrate
+            self.serial_port.timeout = 1
+            self.serial_port.write_timeout = 1
+            self.serial_port.rtscts = False
+            self.serial_port.dsrdtr = False
+            self.serial_port.dtr = False
+            self.serial_port.rts = False
+            self.serial_port.open()
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
+
+            # ---------- 检测装置握手 ----------
+            ok, identity = self._perform_handshake(self.serial_port)
+            if not ok:
+                self.serial_port.close()
+                self.serial_port = None
+                raise serial.SerialException(f"检测装置握手失败: {identity}")
+            self.log(f"检测装置已识别: {identity}")
 
             self._closing = False
             self.serial_reader = SerialReader(self.serial_port)
@@ -231,45 +252,54 @@ class SerialMixin:
 
     @staticmethod
     def _perform_handshake(conn: serial.Serial) -> tuple:
-        """向检测装置发送 HELLO? 握手并等待 DET_ID 响应。
-
-        NodeMCU-32S 的 DTR/RTS 自动复位电路会在串口打开时触发 ESP32
-        硬件复位。需要等待 bootloader + setup() 完成后再开始探测。
-
-        Args:
-            conn: 已打开的 serial.Serial 实例
-
-        Returns:
-            (True, identity_str) 或 (False, reason_str)
-        """
+        """向检测装置发送 HELLO? 握手并等待 DET_ID 响应。"""
         old_timeout = conn.timeout
         conn.timeout = 0.1
-        # 等待 ESP32 完成 bootloader + setup()（约 500-800ms）
-        time.sleep(0.8)
+
+        # 不主动触发 ESP32 自动复位；只释放控制线并探测运行中的固件。
+        try:
+            conn.dtr = False
+            conn.rts = False
+        except (OSError, serial.SerialException, ValueError):
+            pass
+        time.sleep(0.05)
         conn.reset_input_buffer()
+
         deadline = time.time() + HANDSHAKE_TIMEOUT
+        commands = (DETECTOR_HANDSHAKE_CMD, "DET?\r\n")
         next_probe = 0.0
         line = b""
+        probe_count = 0
         try:
             while time.time() < deadline:
                 if time.time() >= next_probe:
-                    conn.write(DETECTOR_HANDSHAKE_CMD.encode("utf-8"))
+                    cmd = commands[probe_count % len(commands)]
+                    conn.write(cmd.encode("utf-8"))
                     conn.flush()
+                    probe_count += 1
+                    print(f"[HANDSHAKE] probe #{probe_count} sent: {cmd.strip()}")
                     next_probe = time.time() + HANDSHAKE_PROBE_INTERVAL
                 chunk = conn.read(1)
                 if not chunk:
                     continue
                 if chunk in (b"\n", b"\r"):
                     text = line.decode("utf-8", errors="ignore").strip()
+                    if text:
+                        print(f"[HANDSHAKE] line: {text!r}")
                     if text.startswith(DETECTOR_ID_PREFIX):
+                        print(f"[HANDSHAKE] MATCH OK")
                         return True, text
                     line = b""
                 else:
                     line += chunk
                     if len(line) > 120:
+                        print(f"[HANDSHAKE] line overflow, discarding")
                         line = b""
         finally:
             conn.timeout = old_timeout
+        if line:
+            print(f"[HANDSHAKE] leftover: {line!r}")
+        print(f"[HANDSHAKE] TIMEOUT after {probe_count} probes")
         return False, "握手超时"
 
 

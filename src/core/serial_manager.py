@@ -78,9 +78,16 @@ class SerialManager(QObject):
             if not port:
                 raise serial.SerialException("未选择端口")
 
-            self.serial_port = serial.Serial(
-                port=port, baudrate=baudrate, timeout=SERIAL_TIMEOUT, write_timeout=WRITE_TIMEOUT
-            )
+            self.serial_port = serial.Serial()
+            self.serial_port.port = port
+            self.serial_port.baudrate = baudrate
+            self.serial_port.timeout = SERIAL_TIMEOUT
+            self.serial_port.write_timeout = WRITE_TIMEOUT
+            self.serial_port.rtscts = False
+            self.serial_port.dsrdtr = False
+            self.serial_port.dtr = False
+            self.serial_port.rts = False
+            self.serial_port.open()
 
             # 清空缓冲区
             self.serial_port.reset_input_buffer()
@@ -115,22 +122,29 @@ class SerialManager(QObject):
     def _perform_handshake(conn: serial.Serial) -> tuple:
         """发送 HELLO? 握手并等待 DET_ID 响应。
 
-        NodeMCU-32S 的 DTR/RTS 自动复位电路会在串口打开时触发 ESP32
-        硬件复位。需要等待 bootloader + setup() 完成后再开始探测。
+        不主动触发 ESP32 自动复位；只释放 DTR/RTS 后探测运行中的固件。
         """
         old_timeout = conn.timeout
         conn.timeout = 0.1
-        # 等待 ESP32 完成 bootloader + setup()（约 500-800ms）
-        time.sleep(0.8)
+        try:
+            conn.dtr = False
+            conn.rts = False
+        except (OSError, serial.SerialException, ValueError):
+            pass
+        time.sleep(0.05)
         conn.reset_input_buffer()
         deadline = time.time() + HANDSHAKE_TIMEOUT
+        commands = (DETECTOR_HANDSHAKE_CMD, "DET?\r\n")
         next_probe = 0.0
         line = b""
+        probe_count = 0
         try:
             while time.time() < deadline:
                 if time.time() >= next_probe:
-                    conn.write(DETECTOR_HANDSHAKE_CMD.encode("utf-8"))
+                    cmd = commands[probe_count % len(commands)]
+                    conn.write(cmd.encode("utf-8"))
                     conn.flush()
+                    probe_count += 1
                     next_probe = time.time() + HANDSHAKE_PROBE_INTERVAL
                 chunk = conn.read(1)
                 if not chunk:
