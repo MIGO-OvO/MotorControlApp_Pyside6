@@ -911,6 +911,8 @@ class MotorControlApp(
                 self.resize_timer.stop()
             if hasattr(self, "spectro_timer"):
                 self.spectro_timer.stop()
+            if hasattr(self, "spectro_baseline_timer"):
+                self.spectro_baseline_timer.stop()
         except (RuntimeError, AttributeError):
             pass
 

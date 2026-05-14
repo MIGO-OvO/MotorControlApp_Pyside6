@@ -3,6 +3,7 @@
 负责串口连接、断开、数据发送和接收
 """
 
+import time
 import threading
 from typing import Callable, List, Optional
 
@@ -10,7 +11,15 @@ import serial
 from PySide6.QtCore import QObject, Signal
 from serial.tools import list_ports
 
-from ..config.constants import COMMAND_TERMINATOR, SERIAL_TIMEOUT, WRITE_TIMEOUT
+from ..config.constants import (
+    COMMAND_TERMINATOR,
+    SERIAL_TIMEOUT,
+    WRITE_TIMEOUT,
+    DETECTOR_HANDSHAKE_CMD,
+    DETECTOR_ID_PREFIX,
+    HANDSHAKE_TIMEOUT,
+    HANDSHAKE_PROBE_INTERVAL,
+)
 from ..hardware.serial_reader import SerialReader
 
 
@@ -69,13 +78,28 @@ class SerialManager(QObject):
             if not port:
                 raise serial.SerialException("未选择端口")
 
-            self.serial_port = serial.Serial(
-                port=port, baudrate=baudrate, timeout=SERIAL_TIMEOUT, write_timeout=WRITE_TIMEOUT
-            )
+            self.serial_port = serial.Serial()
+            self.serial_port.port = port
+            self.serial_port.baudrate = baudrate
+            self.serial_port.timeout = SERIAL_TIMEOUT
+            self.serial_port.write_timeout = WRITE_TIMEOUT
+            self.serial_port.rtscts = False
+            self.serial_port.dsrdtr = False
+            self.serial_port.dtr = False
+            self.serial_port.rts = False
+            self.serial_port.open()
 
             # 清空缓冲区
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
+
+            # 检测装置握手
+            ok, identity = self._perform_handshake(self.serial_port)
+            if not ok:
+                self.serial_port.close()
+                self.serial_port = None
+                self.error_occurred.emit(f"检测装置握手失败: {identity}")
+                return False
 
             # 启动读取线程
             self.serial_reader = SerialReader(self.serial_port)
@@ -92,6 +116,52 @@ class SerialManager(QObject):
         except Exception as e:
             self.error_occurred.emit(f"发生未知错误: {str(e)}")
             return False
+
+
+    @staticmethod
+    def _perform_handshake(conn: serial.Serial) -> tuple:
+        """发送 HELLO? 握手并等待 DET_ID 响应。
+
+        不主动触发 ESP32 自动复位；只释放 DTR/RTS 后探测运行中的固件。
+        """
+        old_timeout = conn.timeout
+        conn.timeout = 0.1
+        try:
+            conn.dtr = False
+            conn.rts = False
+        except (OSError, serial.SerialException, ValueError):
+            pass
+        time.sleep(0.05)
+        conn.reset_input_buffer()
+        deadline = time.time() + HANDSHAKE_TIMEOUT
+        commands = (DETECTOR_HANDSHAKE_CMD, "DET?\r\n")
+        next_probe = 0.0
+        line = b""
+        probe_count = 0
+        try:
+            while time.time() < deadline:
+                if time.time() >= next_probe:
+                    cmd = commands[probe_count % len(commands)]
+                    conn.write(cmd.encode("utf-8"))
+                    conn.flush()
+                    probe_count += 1
+                    next_probe = time.time() + HANDSHAKE_PROBE_INTERVAL
+                chunk = conn.read(1)
+                if not chunk:
+                    continue
+                if chunk in (b"\n", b"\r"):
+                    text = line.decode("utf-8", errors="ignore").strip()
+                    if text.startswith(DETECTOR_ID_PREFIX):
+                        return True, text
+                    line = b""
+                else:
+                    line += chunk
+                    if len(line) > 120:
+                        line = b""
+        finally:
+            conn.timeout = old_timeout
+        return False, "握手超时"
+
 
     def disconnect_port(self) -> None:
         """断开串口连接"""

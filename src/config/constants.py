@@ -38,6 +38,13 @@ DEFAULT_CALIBRATION_AMPLITUDE = 1.0  # 默认校准幅值
 # ==================== 光谱仪配置 ====================
 DEFAULT_SAMPLE_RATE = 90  # SPS (ADS122C04 默认采样率)
 MAX_SPECTRO_DATA_POINTS = 500
+DEFAULT_SPECTRO_CHART_POINTS = MAX_SPECTRO_DATA_POINTS
+SPECTRO_CHART_POINTS_RANGE = (100, 20000)
+SPECTRO_CHART_POINTS_STEP = 100
+DEFAULT_BASELINE_DURATION_MIN = 30
+SPECTRO_BASELINE_DURATION_RANGE = (1, 1440)
+DEFAULT_BASELINE_WARMUP_S = 60
+SPECTRO_BASELINE_WARMUP_RANGE = (0, 3600)
 
 # ADS122C04 支持的采样率列表 (Normal mode)
 ADS_SUPPORTED_RATES = [20, 45, 90, 175, 330, 600, 1000]
@@ -60,6 +67,9 @@ DEFAULT_ADS_CONFIG = {
     "mode": "continuous",
     "adc_rate": 90,
     "publish_rate": 50,
+    "chart_points": DEFAULT_SPECTRO_CHART_POINTS,
+    "baseline_duration_min": DEFAULT_BASELINE_DURATION_MIN,
+    "baseline_warmup_s": DEFAULT_BASELINE_WARMUP_S,
 }
 
 # ADS 参考源选项
@@ -490,6 +500,12 @@ DEVIATION_THRESHOLDS = {"warning": 2.0, "critical": 5.0}  # 橙色警告阈值  
 COMMAND_TERMINATOR = "\r\n"
 ANGLE_REQUEST_COMMAND = "GETANGLE"
 ANGLE_RESPONSE_PREFIX = "ANGLE"
+
+# ==================== 设备握手 ====================
+DETECTOR_HANDSHAKE_CMD = "HELLO?\r\n"
+DETECTOR_ID_PREFIX = "DET_ID:USV_DETECTOR"
+HANDSHAKE_TIMEOUT = 2.5        # 握手总超时 (秒)
+HANDSHAKE_PROBE_INTERVAL = 0.5  # 每次重发 HELLO? 的间隔 (秒)
 
 # ==================== 方向映射 ====================
 DIRECTION_MAP = {"F": 1, "B": -1}  # 正转  # 反转

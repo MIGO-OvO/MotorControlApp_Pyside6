@@ -116,6 +116,14 @@ def test_command_generator():
         
         command = generator.generate_command(test_params, "manual")
         print(f"[OK] 生成指令: {command.strip()}")
+        continuous_forward = generator.generate_command({
+            "X": {"enable": "E", "direction": "F", "speed": "8", "angle": "0", "continuous": True}
+        }, "manual")
+        continuous_backward = generator.generate_command({
+            "X": {"enable": "E", "direction": "B", "speed": "8", "angle": "0", "continuous": True}
+        }, "manual")
+        assert continuous_forward == "XEFV8JG\r\n", "continuous forward command mismatch"
+        assert continuous_backward == "XEBV8JG\r\n", "continuous backward command mismatch"
         
         # 测试停止指令
         stop_command = generator.generate_stop_command()
@@ -165,6 +173,21 @@ def test_settings_manager():
     except Exception as e:
         print(f"设置管理器测试失败: {e} [FAIL]")
         return False
+
+
+def test_command_generator_preserves_continuous_direction():
+    from src.core.command_generator import CommandGenerator
+
+    generator = CommandGenerator()
+    forward = generator.generate_command({
+        "X": {"enable": "E", "direction": "F", "speed": "8", "angle": "0", "continuous": True}
+    }, "manual")
+    backward = generator.generate_command({
+        "X": {"enable": "E", "direction": "B", "speed": "8", "angle": "0", "continuous": True}
+    }, "manual")
+
+    assert forward == "XEFV8JG\r\n"
+    assert backward == "XEBV8JG\r\n"
 
 
 def main():

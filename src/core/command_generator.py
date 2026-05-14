@@ -108,7 +108,7 @@ class CommandGenerator:
             try:
                 # 持续运行模式
                 if is_continuous:
-                    command += f"{motor}EFV{speed}JG"
+                    command += f"{motor}E{direction}V{speed}JG"
                     self.pending_targets[motor] = None
                     continue
 
