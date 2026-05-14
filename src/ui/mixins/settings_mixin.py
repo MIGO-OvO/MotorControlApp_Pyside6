@@ -69,6 +69,9 @@ class SettingsMixin:
             spectro_cfg["gain"] = int(self.spectro_gain_combo.currentText())
             spectro_cfg["adc_rate"] = int(self.spectro_rate_combo.currentText())
             spectro_cfg["publish_rate"] = self.spectro_publish_spin.value()
+            spectro_cfg["chart_points"] = self.spectro_chart_points_spin.value()
+            spectro_cfg["baseline_duration_min"] = self.spectro_baseline_duration_spin.value()
+            spectro_cfg["baseline_warmup_s"] = self.spectro_baseline_warmup_spin.value()
         self.settings_manager.set_section("spectrometer", spectro_cfg)
 
         # 保存 PID 参数设置
@@ -149,6 +152,12 @@ class SettingsMixin:
                     self.spectro_rate_combo.setCurrentText(str(spectro_cfg["adc_rate"]))
                 if "publish_rate" in spectro_cfg:
                     self.spectro_publish_spin.setValue(spectro_cfg["publish_rate"])
+                if "chart_points" in spectro_cfg:
+                    self.spectro_chart_points_spin.setValue(int(spectro_cfg["chart_points"]))
+                if "baseline_duration_min" in spectro_cfg:
+                    self.spectro_baseline_duration_spin.setValue(int(spectro_cfg["baseline_duration_min"]))
+                if "baseline_warmup_s" in spectro_cfg:
+                    self.spectro_baseline_warmup_spin.setValue(int(spectro_cfg["baseline_warmup_s"]))
 
             # 加载零点偏移量
             self.angle_offsets = self.settings_manager.get_angle_offsets()
