@@ -38,6 +38,26 @@ class BaselineMetrics:
     max_voltage_v: float
 
 
+@dataclass(frozen=True)
+class BaselineExportRecord:
+    """One raw record captured during a baseline stability test."""
+
+    elapsed_s: float
+    voltage_v: float
+    raw_code: int
+    status: int
+    tca_channel: int
+    valid: bool
+
+
+@dataclass(frozen=True)
+class BaselineExportTables:
+    """Tabular baseline data ready for XLSX export."""
+
+    summary: list[tuple[str, object]]
+    samples: list[tuple[object, ...]]
+
+
 def analyze_baseline(
     samples: Sequence[BaselineSample],
     warmup_s: float = 0.0,
@@ -104,3 +124,70 @@ def analyze_baseline(
         min_voltage_v=float(np.min(voltages)),
         max_voltage_v=float(np.max(voltages)),
     )
+
+
+def build_baseline_export_tables(
+    records: Sequence[BaselineExportRecord],
+    metrics: BaselineMetrics | None,
+    duration_min: int,
+    warmup_s: int,
+    started_at: str,
+    finished_at: str,
+) -> BaselineExportTables:
+    """Build summary and samples tables for baseline XLSX export."""
+
+    valid_count = sum(1 for record in records if record.valid)
+    summary: list[tuple[str, object]] = [
+        ("field", "value"),
+        ("started_at", started_at),
+        ("finished_at", finished_at),
+        ("duration_min_setting", duration_min),
+        ("warmup_s_setting", warmup_s),
+        ("raw_record_count", len(records)),
+        ("sample_count", metrics.sample_count if metrics else valid_count),
+    ]
+
+    if metrics:
+        summary.extend(
+            [
+                ("effective_duration_s", metrics.duration_s),
+                ("start_voltage_v", metrics.start_voltage_v),
+                ("end_voltage_v", metrics.end_voltage_v),
+                ("mean_voltage_v", metrics.mean_voltage_v),
+                ("drift_v", metrics.drift_v),
+                ("drift_percent", metrics.drift_percent),
+                ("peak_to_peak_v", metrics.peak_to_peak_v),
+                ("std_dev_v", metrics.std_dev_v),
+                ("detrended_rms_v", metrics.detrended_rms_v),
+                ("slope_v_per_s", metrics.slope_v_per_s),
+                ("slope_v_per_min", metrics.slope_v_per_min),
+                ("min_voltage_v", metrics.min_voltage_v),
+                ("max_voltage_v", metrics.max_voltage_v),
+            ]
+        )
+
+    samples: list[tuple[object, ...]] = [
+        (
+            "sample_index",
+            "elapsed_s",
+            "voltage_v",
+            "raw_code",
+            "status",
+            "tca_channel",
+            "valid",
+        )
+    ]
+    samples.extend(
+        (
+            index,
+            record.elapsed_s,
+            record.voltage_v,
+            record.raw_code,
+            record.status,
+            record.tca_channel,
+            record.valid,
+        )
+        for index, record in enumerate(records, start=1)
+    )
+
+    return BaselineExportTables(summary=summary, samples=samples)
