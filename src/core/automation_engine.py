@@ -266,6 +266,8 @@ class AutomationThread(QThread):
 
                 # 日志记录放在锁外，避免死锁
                 try:
+                    if hasattr(parent, "_record_command_sent"):
+                        parent._record_command_sent(command)
                     parent.log(f"指令已发送: {command.strip()}")
                 except Exception:
                     pass  # 日志失败不影响主流程
