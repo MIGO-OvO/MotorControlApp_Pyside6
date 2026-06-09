@@ -98,6 +98,7 @@ from src.config.settings import SettingsManager
 from src.core.automation_engine import AutomationThread
 from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
 from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
+from src.core.serial_diagnostics import CommandRttTracker, parse_detector_debug_line
 from src.hardware.daq_thread import ADSSession
 from src.hardware.serial_reader import SerialReader
 from src.ui.dialogs.motor_step_config import MotorStepConfig
@@ -107,7 +108,9 @@ from src.ui.dialogs import I2CSettingsDialog
 from src.ui.mixins import (
     AnalysisMixin,
     AutomationMixin,
+    BaselineMixin,
     DataExportMixin,
+    HealthMonitorMixin,
     ManualMixin,
     PIDDataMixin,
     PositionMixin,
@@ -127,7 +130,7 @@ from src.ui.widgets import (
 
 
 class MotorControlApp(
-    SpectroMixin, PositionMixin, AnalysisMixin, AutomationMixin, ManualMixin,
+    HealthMonitorMixin, BaselineMixin, SpectroMixin, PositionMixin, AnalysisMixin, AutomationMixin, ManualMixin,
     SerialMixin, DataExportMixin, SettingsMixin, PIDDataMixin, QMainWindow
 ):
     """
@@ -162,6 +165,8 @@ class MotorControlApp(
 
         # 初始化分光信号相关变量
         self._spectro_init_vars()
+        self._baseline_init_vars()
+        self._health_init_vars()
 
         # 初始化基础属性
         # 日志信号连接
@@ -175,6 +180,7 @@ class MotorControlApp(
         self.running = False
         self.serial_lock = threading.Lock()
         self.loop_count = 0
+        self.command_rtt_tracker = CommandRttTracker()
         
         from src.core.preset_manager import PresetManager as PM
 
@@ -297,16 +303,35 @@ class MotorControlApp(
         self.spectro_btn.setFixedHeight(40)
         spectro_control_layout.addWidget(self.spectro_btn)
 
+        self.baseline_btn = QPushButton("基线稳定测试")
+        self.baseline_btn.setCheckable(True)
+        self.baseline_btn.setFont(QFont("Microsoft YaHei", 13))
+        self.baseline_btn.setFixedHeight(40)
+        spectro_control_layout.addWidget(self.baseline_btn)
+
         self.i2c_settings_btn = QPushButton("I2C设置")
         self.i2c_settings_btn.setFont(QFont("Microsoft YaHei", 13))
         self.i2c_settings_btn.setFixedHeight(40)
         spectro_control_layout.addWidget(self.i2c_settings_btn)
         self.nav_layout.addWidget(spectro_control_group)
 
+        # ================= 系统监控 =================
+        self.system_monitor_group = QGroupBox("系统监控")
+        self.system_monitor_group.setFont(QFont("Microsoft YaHei", 13))
+        system_monitor_layout = QVBoxLayout(self.system_monitor_group)
+
+        self.health_btn = QPushButton("健康监控")
+        self.health_btn.setCheckable(True)
+        self.health_btn.setFont(QFont("Microsoft YaHei", 13))
+        self.health_btn.setFixedHeight(40)
+        system_monitor_layout.addWidget(self.health_btn)
+
+        self.nav_layout.addWidget(self.system_monitor_group)
+
         # ================= 串口设置 =================
-        serial_group = QGroupBox("串口设置")
-        serial_group.setFont(QFont("Microsoft YaHei", 13))
-        serial_layout = QVBoxLayout(serial_group)
+        self.serial_group = QGroupBox("串口设置")
+        self.serial_group.setFont(QFont("Microsoft YaHei", 13))
+        serial_layout = QVBoxLayout(self.serial_group)
 
         # 端口选择
         self.port_combo = QComboBox()
@@ -335,7 +360,7 @@ class MotorControlApp(
             btn.setFixedHeight(40)
             serial_layout.addWidget(btn)
 
-        self.nav_layout.addWidget(serial_group)
+        self.nav_layout.addWidget(self.serial_group)
         self.nav_layout.addStretch()
 
         # 主内容区
@@ -375,6 +400,16 @@ class MotorControlApp(
         self.init_spectro_tab()
         self.tab_widget.addTab(self.spectro_tab, "")
 
+        # 基线稳定测试页
+        self.baseline_tab = QWidget()
+        self.init_baseline_tab()
+        self.tab_widget.addTab(self.baseline_tab, "")
+
+        # ESP32 系统健康监控页
+        self.health_tab = QWidget()
+        self.init_health_monitor_tab()
+        self.tab_widget.addTab(self.health_tab, "")
+
         content_layout.addWidget(self.tab_widget)
 
         # ================= 日志区域 (M4: 可折叠 + 只读) =================
@@ -411,6 +446,8 @@ class MotorControlApp(
         self.position_btn.clicked.connect(lambda: self.switch_tab(2))
         self.analysis_btn.clicked.connect(lambda: self.switch_tab(3))
         self.spectro_btn.clicked.connect(lambda: self.switch_tab(4))
+        self.baseline_btn.clicked.connect(lambda: self.switch_tab(5))
+        self.health_btn.clicked.connect(lambda: self.switch_tab(6))
         self.i2c_settings_btn.clicked.connect(self.open_i2c_settings_dialog)
 
         self.connect_btn.clicked.connect(self.toggle_serial)
@@ -492,6 +529,8 @@ class MotorControlApp(
             self.position_btn,
             self.analysis_btn,
             self.spectro_btn,
+            self.baseline_btn,
+            self.health_btn,
         ]
         for i, btn in enumerate(buttons):
             btn.setChecked(i == index)
@@ -523,6 +562,22 @@ class MotorControlApp(
         Args:
             data: 接收到的文本数据行
         """
+        debug_value = parse_detector_debug_line(data)
+        if debug_value is not None:
+            key, value = debug_value
+            self._health_record_debug_value(key, value)
+            if key == "loop_gap_active_max_us":
+                self.log(f"[验证] 电机运行最大loop间隔: {value} us")
+            elif key == "angle_age_ms":
+                self.log(f"[验证] 角度缓存年龄: {value} ms")
+            return
+
+        if self._health_handle_stress_line(data):
+            self.log(f"[压力测试] {data}")
+            return
+
+        self._finish_command_rtt(data)
+
         # PID测试相关消息处理
         if data.startswith("PIDTEST_"):
             self._handle_pid_test_message(data)
@@ -913,6 +968,10 @@ class MotorControlApp(
                 self.spectro_timer.stop()
             if hasattr(self, "spectro_baseline_timer"):
                 self.spectro_baseline_timer.stop()
+            if hasattr(self, "baseline_finish_timer"):
+                self.baseline_finish_timer.stop()
+            if hasattr(self, "baseline_countdown_timer"):
+                self.baseline_countdown_timer.stop()
         except (RuntimeError, AttributeError):
             pass
 

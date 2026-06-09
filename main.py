@@ -15,11 +15,6 @@ if project_root not in sys.path:
 # Windows平台设置
 if platform.system() == 'Windows':
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
-    
-    try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("motor.control.v1")
     except:
         pass
