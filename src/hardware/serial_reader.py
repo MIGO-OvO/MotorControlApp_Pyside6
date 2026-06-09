@@ -6,6 +6,7 @@
 - 0x55 0xBB: PID测试结果包 (18字节)
 - 0x55 0xCC: 角度数据包 (20字节)
 - 0x55 0xDD: 分光数据包 (18字节)
+- 0x55 0xEE: 系统健康包 (37字节)
 """
 
 import struct
@@ -24,6 +25,7 @@ class SerialReader(QThread):
     test_result_received = Signal(dict)  # PID测试结果信号 (0xBB)
     angle_packet_received = Signal(dict)  # 角度数据包信号 (0xCC)
     spectro_packet_received = Signal(dict)  # 分光数据包信号 (0xDD)
+    health_packet_received = Signal(dict)  # 系统健康包信号 (0xEE)
 
     # 通用常量
     HEADER1 = 0x55
@@ -34,12 +36,14 @@ class SerialReader(QThread):
     HEADER2_TEST = 0xBB  # 测试结果包
     HEADER2_ANGLE = 0xCC  # 角度数据包
     HEADER2_SPECTRO = 0xDD  # 分光数据包
+    HEADER2_HEALTH = 0xEE  # 系统健康包
 
     PACKET_SIZE_PID = 29  # PID数据包大小
     PACKET_SIZE_TEST = 18  # 测试结果包大小
     PACKET_SIZE_ANGLE = 20  # 角度数据包大小
     # Keep in sync with lowerDevice/src/protocol_packets.h::SpectroDataPacket.
     PACKET_SIZE_SPECTRO = 18  # 分光数据包大小
+    PACKET_SIZE_HEALTH = 37  # 系统健康包大小
 
     def __init__(self, serial_port: serial.Serial):
         super().__init__()
@@ -129,6 +133,8 @@ class SerialReader(QThread):
                     return (i, self.HEADER2_ANGLE, self.PACKET_SIZE_ANGLE)
                 elif header2 == self.HEADER2_SPECTRO:
                     return (i, self.HEADER2_SPECTRO, self.PACKET_SIZE_SPECTRO)
+                elif header2 == self.HEADER2_HEALTH:
+                    return (i, self.HEADER2_HEALTH, self.PACKET_SIZE_HEALTH)
         return None
 
     def _validate_packet(self, data: bytes, packet_type: int, packet_size: int) -> bool:
@@ -169,6 +175,12 @@ class SerialReader(QThread):
                 checksum ^= data[i]
             return checksum == data[16]
 
+        elif packet_type == self.HEADER2_HEALTH:
+            checksum = 0
+            for i in range(1, 35):
+                checksum ^= data[i]
+            return checksum == data[35]
+
         return False
 
     def _emit_packet(self, data: bytes, packet_type: int):
@@ -182,6 +194,8 @@ class SerialReader(QThread):
                 self._emit_angle_packet(data)
             elif packet_type == self.HEADER2_SPECTRO:
                 self._emit_spectro_packet(data)
+            elif packet_type == self.HEADER2_HEALTH:
+                self._emit_health_packet(data)
         except Exception as e:
             print(f"Packet parse error: {e}")
 
@@ -250,6 +264,30 @@ class SerialReader(QThread):
             "voltage": voltage,
         }
         self.spectro_packet_received.emit(packet)
+
+    def _emit_health_packet(self, data: bytes):
+        """解析并发送系统健康数据包 (0xEE)"""
+        heap_total = struct.unpack("<I", data[24:28])[0]
+        heap_free = struct.unpack("<I", data[16:20])[0]
+        temp_x10 = struct.unpack("<h", data[12:14])[0]
+
+        packet = {
+            "version": data[2],
+            "flags": data[3],
+            "timestamp_ms": struct.unpack("<I", data[4:8])[0],
+            "uptime_s": struct.unpack("<I", data[8:12])[0],
+            "temp_c": temp_x10 / 10.0 if data[3] & 0x01 else None,
+            "cpu_freq_mhz": struct.unpack("<H", data[14:16])[0],
+            "heap_free": heap_free,
+            "heap_min_free": struct.unpack("<I", data[20:24])[0],
+            "heap_total": heap_total,
+            "heap_free_pct": (heap_free / heap_total * 100.0) if heap_total else None,
+            "task_count": data[28],
+            "loop_stack_hwm": struct.unpack("<H", data[29:31])[0],
+            "comms_stack_hwm": struct.unpack("<H", data[31:33])[0],
+            "sensors_stack_hwm": struct.unpack("<H", data[33:35])[0],
+        }
+        self.health_packet_received.emit(packet)
 
     def _process_as_text(self, data: bytes):
         """将数据作为文本处理"""

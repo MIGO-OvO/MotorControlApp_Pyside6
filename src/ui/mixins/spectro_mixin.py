@@ -18,14 +18,11 @@ from PySide6.QtWidgets import (
 from src.config.constants import (
     ADS_AIN_OPTIONS, ADS_GAIN_OPTIONS, ADS_SUPPORTED_RATES,
     ADS_VREF_OPTIONS, DEFAULT_ADS_CONFIG,
-    DEFAULT_BASELINE_DURATION_MIN, DEFAULT_BASELINE_WARMUP_S,
-    DEFAULT_SPECTRO_CHART_POINTS, SPECTRO_BASELINE_DURATION_RANGE,
-    SPECTRO_BASELINE_WARMUP_RANGE, SPECTRO_CHART_POINTS_RANGE,
+    DEFAULT_SPECTRO_CHART_POINTS, SPECTRO_CHART_POINTS_RANGE,
     SPECTRO_CHART_POINTS_STEP,
     COLOR_PRIMARY, COLOR_TEXT_SECONDARY,
     BUTTON_SECONDARY, BUTTON_DANGER, BUTTON_SUCCESS,
 )
-from src.core.spectro_baseline import BaselineMetrics, BaselineSample, analyze_baseline
 try:
     import pyqtgraph as pg
     PYQTGRAPH_AVAILABLE = True
@@ -48,15 +45,6 @@ class SpectroMixin:
         self.spectro_timer = QTimer(self)  # type: ignore[arg-type]
         self.spectro_timer.setTimerType(Qt.PreciseTimer)
         self.spectro_timer.timeout.connect(self._spectro_update_charts)
-        self.spectro_baseline_samples: list[BaselineSample] = []
-        self.spectro_baseline_metrics: Optional[BaselineMetrics] = None
-        self.spectro_baseline_is_running: bool = False
-        self.spectro_baseline_owned_measurement: bool = False
-        self.spectro_baseline_start_time: float = 0.0
-        self.spectro_baseline_timer = QTimer(self)  # type: ignore[arg-type]
-        self.spectro_baseline_timer.setTimerType(Qt.PreciseTimer)
-        self.spectro_baseline_timer.setSingleShot(True)
-        self.spectro_baseline_timer.timeout.connect(self._spectro_finish_baseline_test)
 
     def init_spectro_tab(self):
         if not PYQTGRAPH_AVAILABLE:
@@ -79,7 +67,6 @@ class SpectroMixin:
         self._spectro_create_display_group(ll)
         self._spectro_create_measurement_group(ll)
         self._spectro_create_control_buttons(ll)
-        self._spectro_create_baseline_group(ll)
         ll.addStretch(1)
         self._spectro_create_charts_group(rl)
 
@@ -155,48 +142,6 @@ class SpectroMixin:
             layout.addWidget(btn)
         group.setLayout(layout); parent_layout.addWidget(group)
 
-    def _spectro_create_baseline_group(self, parent_layout):
-        group = QGroupBox("基线稳定测试")
-        layout = QVBoxLayout(); layout.setSpacing(8)
-        form = QFormLayout(); form.setSpacing(8)
-
-        min_duration, max_duration = SPECTRO_BASELINE_DURATION_RANGE
-        self.spectro_baseline_duration_spin = QSpinBox()
-        self.spectro_baseline_duration_spin.setRange(min_duration, max_duration)
-        self.spectro_baseline_duration_spin.setValue(DEFAULT_BASELINE_DURATION_MIN)
-        self.spectro_baseline_duration_spin.setSuffix(" min")
-        self.spectro_baseline_duration_spin.setToolTip("到达设定时长后自动停止并生成稳定性指标。")
-
-        min_warmup, max_warmup = SPECTRO_BASELINE_WARMUP_RANGE
-        self.spectro_baseline_warmup_spin = QSpinBox()
-        self.spectro_baseline_warmup_spin.setRange(min_warmup, max_warmup)
-        self.spectro_baseline_warmup_spin.setValue(DEFAULT_BASELINE_WARMUP_S)
-        self.spectro_baseline_warmup_spin.setSuffix(" s")
-        self.spectro_baseline_warmup_spin.setToolTip("分析时丢弃测试开始后的预热数据。")
-
-        self.spectro_baseline_status_value = QLabel("未开始")
-        self.spectro_baseline_status_value.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
-        self.spectro_baseline_result_label = QLabel("无结果")
-        self.spectro_baseline_result_label.setWordWrap(True)
-        self.spectro_baseline_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.spectro_baseline_result_label.setStyleSheet(
-            "font-size: 13px; color: #1d1d1f; line-height: 150%;"
-        )
-
-        form.addRow("测试时长:", self.spectro_baseline_duration_spin)
-        form.addRow("预热丢弃:", self.spectro_baseline_warmup_spin)
-        form.addRow("状态:", self.spectro_baseline_status_value)
-
-        self.spectro_baseline_btn = QPushButton("开始基线测试")
-        self.spectro_baseline_btn.setToolTip("按固定时长自动采集并分析电压基线稳定性。")
-        self.spectro_baseline_btn.setStyleSheet(BUTTON_SUCCESS)
-        self.spectro_baseline_btn.clicked.connect(self._spectro_toggle_baseline_test)
-
-        layout.addLayout(form)
-        layout.addWidget(self.spectro_baseline_btn)
-        layout.addWidget(self.spectro_baseline_result_label)
-        group.setLayout(layout); parent_layout.addWidget(group)
-
     def _spectro_create_charts_group(self, parent_layout):
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
         container = QWidget(); cl = QVBoxLayout(container); cl.setSpacing(15)
@@ -250,8 +195,8 @@ class SpectroMixin:
         return True
 
     def _spectro_stop_measurement(self):
-        if self.spectro_baseline_is_running:
-            self._spectro_finish_baseline_test(manual_stop=True, stop_owned_measurement=False)
+        if getattr(self, "baseline_is_running", False):
+            self._baseline_finish_test(manual_stop=True, stop_owned_measurement=False)
         if self.spectro_timer.isActive():
             self.spectro_timer.stop()
         if self.serial_port and self.serial_port.is_open:
@@ -267,6 +212,11 @@ class SpectroMixin:
 
     def _spectro_set_chart_points(self, value: int) -> None:
         self.spectro_max_data_points = value
+        if hasattr(self, "baseline_chart_points_spin") and self.baseline_chart_points_spin.value() != value:
+            self.baseline_chart_points_spin.blockSignals(True)
+            self.baseline_chart_points_spin.setValue(value)
+            self.baseline_chart_points_spin.blockSignals(False)
+            self._baseline_set_chart_points(value, sync_spectro=False)
         self._spectro_trim_chart_data()
         self._spectro_update_charts()
 
@@ -275,91 +225,6 @@ class SpectroMixin:
             del self.spectro_voltage_data[:-self.spectro_max_data_points]
         if len(self.spectro_absorbance_data) > self.spectro_max_data_points:
             del self.spectro_absorbance_data[:-self.spectro_max_data_points]
-
-    def _spectro_toggle_baseline_test(self) -> None:
-        if self.spectro_baseline_is_running:
-            self._spectro_finish_baseline_test(manual_stop=True)
-        else:
-            self._spectro_start_baseline_test()
-
-    def _spectro_start_baseline_test(self) -> None:
-        owned_measurement = not self.spectro_is_measuring
-        if owned_measurement and not self._spectro_start_measurement():
-            return
-
-        self.spectro_baseline_samples.clear()
-        self.spectro_baseline_metrics = None
-        self.spectro_baseline_is_running = True
-        self.spectro_baseline_owned_measurement = owned_measurement
-        self.spectro_baseline_start_time = time.time()
-        self._spectro_set_baseline_controls_enabled(False)
-        self.spectro_baseline_btn.setText("停止基线测试")
-        self.spectro_baseline_btn.setStyleSheet(BUTTON_DANGER)
-        self.spectro_baseline_status_value.setText("测试中...")
-        self.spectro_baseline_result_label.setText("等待有效分光数据...")
-
-        duration_ms = int(self.spectro_baseline_duration_spin.value() * 60 * 1000)
-        self.spectro_baseline_timer.start(duration_ms)
-        self.log(
-            "基线稳定测试开始: "
-            f"时长 {self.spectro_baseline_duration_spin.value()} min, "
-            f"预热 {self.spectro_baseline_warmup_spin.value()} s"
-        )
-
-    def _spectro_finish_baseline_test(
-        self,
-        manual_stop: bool = False,
-        stop_owned_measurement: bool = True,
-    ) -> None:
-        if not self.spectro_baseline_is_running:
-            return
-
-        if self.spectro_baseline_timer.isActive():
-            self.spectro_baseline_timer.stop()
-
-        owned_measurement = self.spectro_baseline_owned_measurement
-        self.spectro_baseline_is_running = False
-        self.spectro_baseline_owned_measurement = False
-        self._spectro_set_baseline_controls_enabled(True)
-        self.spectro_baseline_btn.setText("开始基线测试")
-        self.spectro_baseline_btn.setStyleSheet(BUTTON_SUCCESS)
-
-        try:
-            metrics = analyze_baseline(
-                self.spectro_baseline_samples,
-                warmup_s=float(self.spectro_baseline_warmup_spin.value()),
-            )
-        except ValueError as exc:
-            self.spectro_baseline_metrics = None
-            self.spectro_baseline_status_value.setText("样本不足")
-            self.spectro_baseline_result_label.setText(str(exc))
-            self.log(f"基线稳定测试无法生成结果: {exc}")
-        else:
-            self.spectro_baseline_metrics = metrics
-            status_text = "已手动停止" if manual_stop else "已完成"
-            result_text = self._spectro_format_baseline_metrics(metrics)
-            self.spectro_baseline_status_value.setText(status_text)
-            self.spectro_baseline_result_label.setText(result_text)
-            self.log(f"基线稳定测试{status_text}: {result_text.replace(chr(10), ' | ')}")
-
-        if stop_owned_measurement and owned_measurement:
-            self._spectro_stop_measurement()
-
-    def _spectro_set_baseline_controls_enabled(self, enabled: bool) -> None:
-        self.spectro_baseline_duration_spin.setEnabled(enabled)
-        self.spectro_baseline_warmup_spin.setEnabled(enabled)
-
-    def _spectro_format_baseline_metrics(self, metrics: BaselineMetrics) -> str:
-        return (
-            f"样本 {metrics.sample_count} 点，有效 {metrics.duration_s / 60.0:.2f} min\n"
-            f"起止均值 {metrics.start_voltage_v:.6f} -> {metrics.end_voltage_v:.6f} V\n"
-            f"漂移 {metrics.drift_v:+.6f} V ({metrics.drift_percent:+.3f}%)\n"
-            f"峰峰值 {metrics.peak_to_peak_v:.6f} V，标准差 {metrics.std_dev_v:.6f} V\n"
-            f"斜率 {metrics.slope_v_per_min:+.6f} V/min，去趋势RMS {metrics.detrended_rms_v:.6f} V"
-        )
-
-    def _spectro_is_valid_baseline_packet(self, status: int) -> bool:
-        return bool(status & 0x01) and not bool(status & 0x02) and not bool(status & 0x08)
 
     def handle_spectro_packet(self, packet: dict):
         """处理分光二进制数据包 (0xDD)。"""
@@ -396,14 +261,8 @@ class SpectroMixin:
             "absorbance": absorbance, "spectro_channel": packet.get("tca_channel", 0),
         })
 
-        if self.spectro_baseline_is_running and self._spectro_is_valid_baseline_packet(status):
-            baseline_ts = time.time() - self.spectro_baseline_start_time
-            self.spectro_baseline_samples.append(
-                BaselineSample(timestamp_s=baseline_ts, voltage=voltage)
-            )
-            self.spectro_baseline_status_value.setText(
-                f"测试中... {len(self.spectro_baseline_samples)} 点"
-            )
+        if hasattr(self, "handle_baseline_packet"):
+            self.handle_baseline_packet(packet, voltage, status)
 
     def _spectro_set_reference(self):
         if self.spectro_is_measuring and self.spectro_voltage_data:

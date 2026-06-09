@@ -118,6 +118,9 @@ class SerialMixin:
             self.serial_reader.spectro_packet_received.connect(
                 self.handle_spectro_packet, Qt.ConnectionType.QueuedConnection
             )
+            self.serial_reader.health_packet_received.connect(
+                self.handle_health_packet, Qt.ConnectionType.QueuedConnection
+            )
             self.serial_reader.start()
 
             if hasattr(self, "_chart_update_timer"):
@@ -201,6 +204,10 @@ class SerialMixin:
                 pass
             try:
                 reader.spectro_packet_received.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                reader.health_packet_received.disconnect()
             except (TypeError, RuntimeError):
                 pass
 
@@ -320,6 +327,8 @@ class SerialMixin:
                 command = command.rstrip("\r\n") + "\r\n"
                 self.serial_port.write(command.encode("utf-8"))
                 self.serial_port.flush()
+            if hasattr(self, "_record_command_sent"):
+                self._record_command_sent(command)
             self.log(f"已发送指令: {command.strip()}")
             return True
         except Exception as e:
