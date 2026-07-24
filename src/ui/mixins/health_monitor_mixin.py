@@ -55,6 +55,7 @@ class HealthMonitorMixin:
         self.health_chart_limit = 600
         self.detector_health = {}
         self.detector_diag = {}
+        self.detector_ads_health = {}
         self.last_command_rtt_ms = None
         self.health_stress_state = "IDLE"
         self.health_recording_active = False
@@ -104,6 +105,12 @@ class HealthMonitorMixin:
         self.health_rtt_value = self._health_metric_label("--", COLOR_TEXT_PRIMARY)
         self.health_stack_value = self._health_metric_label("--", COLOR_TEXT_SECONDARY, 15)
         self.health_record_count_value = self._health_metric_label("0", COLOR_TEXT_PRIMARY)
+        self.health_ads_success_value = self._health_metric_label("--", COLOR_ACCENT_GREEN)
+        self.health_ads_i2c_value = self._health_metric_label("--", COLOR_ACCENT_RED)
+        self.health_ads_crc_value = self._health_metric_label("--", COLOR_ACCENT_RED)
+        self.health_ads_duplicate_value = self._health_metric_label("--", COLOR_ACCENT_ORANGE)
+        self.health_ads_transient_value = self._health_metric_label("--", COLOR_ACCENT_BLUE)
+        self.health_ads_mutex_value = self._health_metric_label("--", COLOR_ACCENT_ORANGE)
 
         metrics = [
             ("温度", self.health_temp_value),
@@ -114,6 +121,12 @@ class HealthMonitorMixin:
             ("串口 RTT", self.health_rtt_value),
             ("任务栈水位 L/C/S", self.health_stack_value),
             ("会话记录", self.health_record_count_value),
+            ("ADS 成功", self.health_ads_success_value),
+            ("ADS I2C 错误", self.health_ads_i2c_value),
+            ("ADS CRC 错误", self.health_ads_crc_value),
+            ("ADS 重复帧", self.health_ads_duplicate_value),
+            ("ADS 瞬态丢弃", self.health_ads_transient_value),
+            ("ADS Mutex 超时", self.health_ads_mutex_value),
         ]
         for index, (title, label) in enumerate(metrics):
             row = index // 4
@@ -303,6 +316,28 @@ class HealthMonitorMixin:
         self._update_detector_health_labels()
         self._health_refresh_all()
 
+    def _health_record_ads_counters(self, counters: dict[str, int]) -> None:
+        previous = dict(getattr(self, "detector_ads_health", {}))
+        self.detector_ads_health = {key: int(value) for key, value in counters.items()}
+        if hasattr(self, "health_history") and self.health_recording_active:
+            self.health_history.update_ads_counters(self.detector_ads_health)
+
+        warning_labels = {
+            "i2c_error": "I2C 错误",
+            "crc_error": "CRC 错误",
+            "duplicate": "重复帧",
+            "transient_drop": "瞬态丢弃",
+        }
+        for key, label in warning_labels.items():
+            old_value = previous.get(key)
+            new_value = self.detector_ads_health.get(key)
+            if old_value is not None and new_value is not None and new_value > old_value:
+                self.log(f"[ADS诊断] {label}: {old_value} -> {new_value}")
+
+        if hasattr(self, "_spectro_refresh_integrity_label"):
+            self._spectro_refresh_integrity_label()
+        self._health_refresh_all()
+
     def _health_handle_stress_line(self, line: str) -> bool:
         text = line.strip()
         if text.startswith("STRESS_OK:START"):
@@ -483,6 +518,7 @@ class HealthMonitorMixin:
     def _health_update_metrics(self, sample: HealthSample | None) -> None:
         health = getattr(self, "detector_health", {})
         diag = getattr(self, "detector_diag", {})
+        ads = getattr(self, "detector_ads_health", {})
 
         self.health_temp_value.setText(_format_unit(health.get("temp_c"), "°C", 1))
         self.health_heap_value.setText(_format_unit(health.get("heap_free_pct"), "%", 1))
@@ -492,6 +528,12 @@ class HealthMonitorMixin:
         )
         self.health_angle_age_value.setText(_format_unit(diag.get("angle_age_ms"), "ms", 0))
         self.health_rtt_value.setText(_format_unit(self.last_command_rtt_ms, "ms", 1))
+        self.health_ads_success_value.setText(_format_count(ads.get("success")))
+        self.health_ads_i2c_value.setText(_format_count(ads.get("i2c_error")))
+        self.health_ads_crc_value.setText(_format_count(ads.get("crc_error")))
+        self.health_ads_duplicate_value.setText(_format_count(ads.get("duplicate")))
+        self.health_ads_transient_value.setText(_format_count(ads.get("transient_drop")))
+        self.health_ads_mutex_value.setText(_format_count(ads.get("mutex_timeout")))
 
         if health:
             self.health_stack_value.setText(
@@ -502,7 +544,10 @@ class HealthMonitorMixin:
             self.health_summary_label.setText(
                 f"Uptime {health.get('uptime_s', '--')} s | "
                 f"Heap {health.get('heap_free', '--')}/{health.get('heap_total', '--')} | "
-                f"Tasks {health.get('task_count', '--')}"
+                f"Tasks {health.get('task_count', '--')} | "
+                f"ADS CRC {ads.get('crc_error', '--')} "
+                f"Dup {ads.get('duplicate', '--')} "
+                f"Drop {ads.get('transient_drop', '--')}"
             )
         else:
             self.health_stack_value.setText("--")
@@ -578,6 +623,10 @@ def _format_unit(value, unit: str, digits: int) -> str:
     if isinstance(value, float):
         return f"{value:.{digits}f} {unit}"
     return f"{value} {unit}"
+
+
+def _format_count(value) -> str:
+    return "--" if value is None else str(int(value))
 
 
 def _nan_none(value):

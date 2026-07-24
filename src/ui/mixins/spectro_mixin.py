@@ -4,7 +4,8 @@
 已移除 NI DAQ 依赖，所有采集由下位机统一完成。
 """
 from __future__ import annotations
-import csv, os, time
+import os
+import time
 from datetime import datetime
 from typing import Optional
 import numpy as np
@@ -23,6 +24,11 @@ from src.config.constants import (
     COLOR_PRIMARY, COLOR_TEXT_SECONDARY,
     BUTTON_SECONDARY, BUTTON_DANGER, BUTTON_SUCCESS,
 )
+from src.core.spectro_trace import (
+    SpectroTraceRecorder,
+    compare_spectro_csv,
+    format_spectro_comparison,
+)
 try:
     import pyqtgraph as pg
     PYQTGRAPH_AVAILABLE = True
@@ -40,7 +46,10 @@ class SpectroMixin:
         self.spectro_voltage_data: list[float] = []
         self.spectro_absorbance_data: list[float] = []
         self.spectro_max_data_points: int = DEFAULT_SPECTRO_CHART_POINTS
-        self.spectro_data_log: list[dict] = []
+        self.spectro_trace = SpectroTraceRecorder(transport_path="windows_direct")
+        self.spectro_data_log = self.spectro_trace.records
+        self.spectro_latest_record: Optional[dict] = None
+        self.spectro_last_export_path = ""
         self.spectro_start_time: float = 0.0
         self.spectro_timer = QTimer(self)  # type: ignore[arg-type]
         self.spectro_timer.setTimerType(Qt.PreciseTimer)
@@ -86,11 +95,20 @@ class SpectroMixin:
         self.spectro_rate_combo.addItems([str(r) for r in ADS_SUPPORTED_RATES])
         self.spectro_rate_combo.setCurrentText(str(DEFAULT_ADS_CONFIG.get("adc_rate", 90)))
         self.spectro_publish_spin = QSpinBox(); self.spectro_publish_spin.setRange(1, 200)
-        self.spectro_publish_spin.setValue(DEFAULT_ADS_CONFIG.get("publish_rate", 50))
+        self.spectro_publish_spin.setValue(DEFAULT_ADS_CONFIG.get("publish_rate", 20))
         layout.addRow("参考源:", self.spectro_vref_combo)
         layout.addRow("增益:", self.spectro_gain_combo)
         layout.addRow("ADC 数据率:", self.spectro_rate_combo)
         layout.addRow("上传频率 (Hz):", self.spectro_publish_spin)
+        self.spectro_compare_profile_btn = QPushButton("应用 Jetson 对比参数")
+        self.spectro_compare_profile_btn.setToolTip(
+            "载入 Jetson 默认分光配置：通道 2、地址 0x40、AVDD、增益 1、"
+            "ADC 90 SPS、发布 20 Hz"
+        )
+        self.spectro_compare_profile_btn.clicked.connect(
+            self._spectro_apply_jetson_compare_profile
+        )
+        layout.addRow(self.spectro_compare_profile_btn)
         group.setLayout(layout); parent_layout.addWidget(group)
 
     def _spectro_create_display_group(self, parent_layout):
@@ -117,10 +135,16 @@ class SpectroMixin:
         self.spectro_ref_value.setStyleSheet("font-size: 16px; color: #4745B5;")
         self.spectro_status_label = QLabel("就绪")
         self.spectro_status_label.setStyleSheet(f"font-size: 14px; color: {COLOR_TEXT_SECONDARY};")
+        self.spectro_timing_value = QLabel("Host Δ -- / Device Δ --")
+        self.spectro_timing_value.setStyleSheet(f"font-size: 14px; color: {COLOR_TEXT_SECONDARY};")
+        self.spectro_integrity_value = QLabel("CRC -- / Dup -- / Drop --")
+        self.spectro_integrity_value.setStyleSheet(f"font-size: 14px; color: {COLOR_TEXT_SECONDARY};")
         layout.addRow("电压:", self.spectro_voltage_value)
         layout.addRow("吸光度:", self.spectro_absorbance_value)
         layout.addRow("参考电压:", self.spectro_ref_value)
         layout.addRow("状态:", self.spectro_status_label)
+        layout.addRow("接收间隔:", self.spectro_timing_value)
+        layout.addRow("固件完整性:", self.spectro_integrity_value)
         group.setLayout(layout); parent_layout.addWidget(group)
 
     def _spectro_create_control_buttons(self, parent_layout):
@@ -136,9 +160,20 @@ class SpectroMixin:
         self.spectro_clear_btn.setToolTip("清除所有已采集的电压和吸光度数据")
         self.spectro_clear_btn.clicked.connect(self._spectro_clear_data)
         self.spectro_save_btn = QPushButton("保存数据")
-        self.spectro_save_btn.setToolTip("将采集数据导出为CSV文件")
+        self.spectro_save_btn.setToolTip("导出与 Jetson raw.csv 前八列一致的对比 CSV")
         self.spectro_save_btn.clicked.connect(self._spectro_save_data)
-        for btn in [self.spectro_start_btn, self.spectro_ref_btn, self.spectro_clear_btn, self.spectro_save_btn]:
+        self.spectro_compare_btn = QPushButton("对比 Jetson CSV")
+        self.spectro_compare_btn.setToolTip(
+            "依次选择 Windows 直连 CSV 和 Jetson 采样窗口 raw.csv，比较频率、抖动和毛刺。"
+        )
+        self.spectro_compare_btn.clicked.connect(self._spectro_compare_jetson_csv)
+        for btn in [
+            self.spectro_start_btn,
+            self.spectro_ref_btn,
+            self.spectro_clear_btn,
+            self.spectro_save_btn,
+            self.spectro_compare_btn,
+        ]:
             layout.addWidget(btn)
         group.setLayout(layout); parent_layout.addWidget(group)
 
@@ -171,6 +206,19 @@ class SpectroMixin:
         pr = self.spectro_publish_spin.value()
         return f"ADSCFG:CH={ch},ADDR={addr},AIN=AIN0,REF={vref},GAIN={gain},DR={dr},MODE=CONT,PR={pr}\r\n"
 
+    def _spectro_apply_jetson_compare_profile(self) -> None:
+        """Apply matching ADS settings for Windows/Jetson comparison."""
+        self.spectro_tca_channel_spin.setValue(2)
+        self.spectro_ads_addr_combo.setCurrentText("0x40")
+        self.spectro_vref_combo.setCurrentText("AVDD")
+        self.spectro_gain_combo.setCurrentText("1")
+        self.spectro_rate_combo.setCurrentText("90")
+        self.spectro_publish_spin.setValue(20)
+        self.log(
+            "已载入 Jetson 对比参数: CH2, 0x40, AVDD, GAIN 1, "
+            "ADC 90 SPS, 发布 20 Hz"
+        )
+
     def _spectro_toggle_measurement(self):
         if not self.spectro_is_measuring:
             self._spectro_start_measurement()
@@ -190,6 +238,8 @@ class SpectroMixin:
         self.spectro_ref_btn.setEnabled(True)
         self.spectro_status_label.setText("采集中...")
         self.spectro_start_time = time.time()
+        self.spectro_trace.start_session()
+        self.spectro_latest_record = None
         self.spectro_timer.start(100)
         self.log("分光信号开始采集")
         return True
@@ -230,6 +280,8 @@ class SpectroMixin:
         """处理分光二进制数据包 (0xDD)。"""
         if getattr(self, "_closing", False):
             return
+        received_at_s = time.time()
+        received_at_ms = int(received_at_s * 1000)
         voltage = float(packet.get("voltage", 0.0))
         raw_code = packet.get("raw_code", 0)
         status = int(packet.get("status", 0))
@@ -255,11 +307,20 @@ class SpectroMixin:
         self.spectro_absorbance_data.append(absorbance)
         self._spectro_trim_chart_data()
 
-        ts = time.time() - self.spectro_start_time if self.spectro_start_time else 0
-        self.spectro_data_log.append({
-            "timestamp": ts, "raw_code": raw_code, "voltage": voltage,
-            "absorbance": absorbance, "spectro_channel": packet.get("tca_channel", 0),
-        })
+        elapsed_s = received_at_s - self.spectro_start_time if self.spectro_start_time else 0
+        self.spectro_latest_record = self.spectro_trace.append_packet(
+            packet,
+            received_at_ms=received_at_ms,
+            elapsed_s=elapsed_s,
+            absorbance=absorbance,
+            ads_counters=getattr(self, "detector_ads_health", {}),
+        )
+        host_delta = self.spectro_latest_record.get("host_interarrival_ms")
+        source_delta = self.spectro_latest_record.get("source_delta_ms")
+        self.spectro_timing_value.setText(
+            f"Host Δ {_format_interval(host_delta)} / Device Δ {_format_interval(source_delta)}"
+        )
+        self._spectro_refresh_integrity_label()
 
         if hasattr(self, "handle_baseline_packet"):
             self.handle_baseline_packet(packet, voltage, status)
@@ -283,7 +344,10 @@ class SpectroMixin:
     def _spectro_clear_data(self):
         self.spectro_voltage_data.clear()
         self.spectro_absorbance_data.clear()
-        self.spectro_data_log.clear()
+        self.spectro_trace.clear()
+        self.spectro_latest_record = None
+        self.spectro_timing_value.setText("Host Δ -- / Device Δ --")
+        self._spectro_refresh_integrity_label()
         self._spectro_update_charts()
         self.log("分光数据已清除")
 
@@ -303,12 +367,54 @@ class SpectroMixin:
         if not path:
             return
         try:
-            fields = ["timestamp", "raw_code", "voltage", "absorbance", "spectro_channel"]
-            with open(path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(self.spectro_data_log)
+            self.spectro_trace.export_csv(path)
+            self.spectro_last_export_path = path
             self.log(f"分光数据已保存至 {os.path.basename(path)}")
         except Exception as e:
             self.log(f"保存数据失败: {e}")
             QMessageBox.critical(self, "保存错误", f"文件保存失败: {e}")
+
+    def _spectro_compare_jetson_csv(self):
+        windows_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Windows 直连 CSV",
+            self.spectro_last_export_path,
+            "CSV Files (*.csv)",
+        )
+        if not windows_path:
+            return
+        jetson_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Jetson 采样窗口 raw.csv",
+            "",
+            "CSV Files (*.csv)",
+        )
+        if not jetson_path:
+            return
+        try:
+            comparison = compare_spectro_csv(windows_path, jetson_path)
+            QMessageBox.information(
+                self,
+                "Windows / Jetson 分光链路对比",
+                format_spectro_comparison(comparison),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "对比失败", f"无法比较 CSV: {exc}")
+
+    def _spectro_refresh_integrity_label(self) -> None:
+        if not hasattr(self, "spectro_integrity_value"):
+            return
+        counters = getattr(self, "detector_ads_health", {})
+        self.spectro_integrity_value.setText(
+            f"CRC {_format_counter(counters.get('crc_error'))} / "
+            f"Dup {_format_counter(counters.get('duplicate'))} / "
+            f"Drop {_format_counter(counters.get('transient_drop'))}"
+        )
+
+
+def _format_interval(value) -> str:
+    return "--" if value is None else f"{int(value)} ms"
+
+
+def _format_counter(value) -> str:
+    return "--" if value is None else str(int(value))

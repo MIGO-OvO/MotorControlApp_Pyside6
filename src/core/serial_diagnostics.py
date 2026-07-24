@@ -29,6 +29,22 @@ def parse_detector_debug_line(line: str) -> Optional[tuple[str, int]]:
     return None
 
 
+def parse_ads_health_line(line: str) -> Optional[dict[str, int]]:
+    """Parse the firmware ADS_HEALTH line using the same lowercase keys as ROS."""
+    text = line.strip()
+    if not text.startswith("ADS_HEALTH:"):
+        return None
+
+    counters: dict[str, int] = {}
+    try:
+        for item in text.split(":", 1)[1].split(","):
+            key, value = item.split("=", 1)
+            counters[key.strip().lower()] = int(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return counters
+
+
 class CommandRttTracker:
     """Tracks one outstanding serial command and its first text response."""
 

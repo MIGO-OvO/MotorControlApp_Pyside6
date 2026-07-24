@@ -98,7 +98,11 @@ from src.config.settings import SettingsManager
 from src.core.automation_engine import AutomationThread
 from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
 from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
-from src.core.serial_diagnostics import CommandRttTracker, parse_detector_debug_line
+from src.core.serial_diagnostics import (
+    CommandRttTracker,
+    parse_ads_health_line,
+    parse_detector_debug_line,
+)
 from src.hardware.daq_thread import ADSSession
 from src.hardware.serial_reader import SerialReader
 from src.ui.dialogs.motor_step_config import MotorStepConfig
@@ -562,6 +566,11 @@ class MotorControlApp(
         Args:
             data: 接收到的文本数据行
         """
+        ads_health = parse_ads_health_line(data)
+        if ads_health is not None:
+            self._health_record_ads_counters(ads_health)
+            return
+
         debug_value = parse_detector_debug_line(data)
         if debug_value is not None:
             key, value = debug_value
