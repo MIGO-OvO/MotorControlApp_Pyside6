@@ -27,6 +27,12 @@ CSV_COLUMNS = [
     "sensors_stack_hwm",
     "loop_gap_active_max_us",
     "angle_age_ms",
+    "ads_success",
+    "ads_mutex_timeout",
+    "ads_i2c_error",
+    "ads_crc_error",
+    "ads_duplicate",
+    "ads_transient_drop",
     "command_rtt_ms",
 ]
 
@@ -49,6 +55,12 @@ class HealthSample:
     sensors_stack_hwm: Optional[int]
     loop_gap_active_max_us: Optional[int] = None
     angle_age_ms: Optional[int] = None
+    ads_success: Optional[int] = None
+    ads_mutex_timeout: Optional[int] = None
+    ads_i2c_error: Optional[int] = None
+    ads_crc_error: Optional[int] = None
+    ads_duplicate: Optional[int] = None
+    ads_transient_drop: Optional[int] = None
     command_rtt_ms: Optional[float] = None
 
 
@@ -108,6 +120,17 @@ class HealthHistory:
         if latest is not None:
             latest.command_rtt_ms = float(rtt_ms)
 
+    def update_ads_counters(self, counters: dict[str, int]) -> None:
+        latest = self.latest
+        if latest is None:
+            return
+        latest.ads_success = _optional_int(counters.get("success"))
+        latest.ads_mutex_timeout = _optional_int(counters.get("mutex_timeout"))
+        latest.ads_i2c_error = _optional_int(counters.get("i2c_error"))
+        latest.ads_crc_error = _optional_int(counters.get("crc_error"))
+        latest.ads_duplicate = _optional_int(counters.get("duplicate"))
+        latest.ads_transient_drop = _optional_int(counters.get("transient_drop"))
+
     def clear(self) -> None:
         self.samples.clear()
         self._started_at_s = None
@@ -145,6 +168,12 @@ def _sample_to_csv_row(sample: HealthSample) -> dict[str, str]:
         "sensors_stack_hwm": sample.sensors_stack_hwm,
         "loop_gap_active_max_us": sample.loop_gap_active_max_us,
         "angle_age_ms": sample.angle_age_ms,
+        "ads_success": sample.ads_success,
+        "ads_mutex_timeout": sample.ads_mutex_timeout,
+        "ads_i2c_error": sample.ads_i2c_error,
+        "ads_crc_error": sample.ads_crc_error,
+        "ads_duplicate": sample.ads_duplicate,
+        "ads_transient_drop": sample.ads_transient_drop,
         "command_rtt_ms": sample.command_rtt_ms,
     }
     return {key: _format_csv_value(row[key]) for key in CSV_COLUMNS}

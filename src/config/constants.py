@@ -66,7 +66,8 @@ DEFAULT_ADS_CONFIG = {
     "pga_bypass": True,
     "mode": "continuous",
     "adc_rate": 90,
-    "publish_rate": 50,
+    # Keep equal to Jetson's usv_params.yaml so connection-path tests are comparable.
+    "publish_rate": 20,
     "chart_points": DEFAULT_SPECTRO_CHART_POINTS,
     "baseline_duration_min": DEFAULT_BASELINE_DURATION_MIN,
     "baseline_warmup_s": DEFAULT_BASELINE_WARMUP_S,

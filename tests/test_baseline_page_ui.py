@@ -12,6 +12,36 @@ from src.ui.mixins.baseline_mixin import BaselineMixin
 from src.ui.main_window_complete import MotorControlApp
 
 
+class _FakeCurve:
+    def setData(self, *_args, **_kwargs):
+        pass
+
+
+class _FakePlotWidget(QWidget):
+    def setTitle(self, *_args, **_kwargs):
+        pass
+
+    def setBackground(self, *_args, **_kwargs):
+        pass
+
+    def showGrid(self, *_args, **_kwargs):
+        pass
+
+    def setLabel(self, *_args, **_kwargs):
+        pass
+
+    def plot(self, *_args, **_kwargs):
+        return _FakeCurve()
+
+
+class _FakePg:
+    PlotWidget = _FakePlotWidget
+
+    @staticmethod
+    def mkPen(*_args, **_kwargs):
+        return object()
+
+
 def _app():
     app = QApplication.instance()
     if app is None:
@@ -77,6 +107,52 @@ def test_baseline_metric_card_stylesheet_has_balanced_braces():
     style = card.styleSheet().strip()
     assert style.count("{") == style.count("}")
     assert not style.endswith("}}")
+
+
+def test_spectro_page_records_jetson_compatible_transport_diagnostics(monkeypatch):
+    import src.ui.mixins.spectro_mixin as spectro_mixin
+
+    monkeypatch.setattr(spectro_mixin, "PYQTGRAPH_AVAILABLE", True)
+    monkeypatch.setattr(spectro_mixin, "pg", _FakePg)
+    _app()
+    window = MotorControlApp()
+
+    assert hasattr(window, "spectro_compare_profile_btn")
+    window.spectro_compare_profile_btn.click()
+    assert window.spectro_tca_channel_spin.value() == 2
+    assert window.spectro_ads_addr_combo.currentText() == "0x40"
+    assert window.spectro_vref_combo.currentText() == "AVDD"
+    assert window.spectro_gain_combo.currentText() == "1"
+    assert window.spectro_rate_combo.currentText() == "90"
+    assert window.spectro_publish_spin.value() == 20
+    assert hasattr(window, "spectro_timing_value")
+    assert hasattr(window, "spectro_integrity_value")
+    assert hasattr(window, "spectro_compare_btn")
+
+    window.spectro_trace.start_session("ui-test")
+    window.detector_ads_health = {
+        "crc_error": 1,
+        "duplicate": 2,
+        "transient_drop": 3,
+    }
+    packet = {
+        "timestamp_ms": 1000,
+        "tca_channel": 2,
+        "status": 0x01,
+        "raw_code": 123,
+        "voltage": 1.035,
+    }
+    window.handle_spectro_packet(packet)
+    packet["timestamp_ms"] = 1050
+    window.handle_spectro_packet(packet)
+
+    assert window.spectro_data_log[-1]["source_delta_ms"] == 50
+    assert window.spectro_data_log[-1]["transport_path"] == "windows_direct"
+    assert window.spectro_data_log[-1]["ads_crc_error"] == 1
+    assert "Device Δ 50 ms" in window.spectro_timing_value.text()
+    assert window.spectro_integrity_value.text() == "CRC 1 / Dup 2 / Drop 3"
+
+    window.deleteLater()
 
 
 def test_startup_does_not_override_qt_dpi_awareness():

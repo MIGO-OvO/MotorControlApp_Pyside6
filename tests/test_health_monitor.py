@@ -60,17 +60,34 @@ def test_health_history_updates_latest_sample_with_debug_and_rtt():
     history.append_packet(_health_packet(), host_time=datetime(2026, 6, 3, 12, 0, 0))
     history.update_debug_value("loop_gap_active_max_us", 87)
     history.update_debug_value("angle_age_ms", 12)
+    history.update_ads_counters(
+        {
+            "success": 100,
+            "mutex_timeout": 2,
+            "i2c_error": 1,
+            "crc_error": 3,
+            "duplicate": 4,
+            "transient_drop": 5,
+        }
+    )
     history.update_command_rtt(37.4)
 
     latest = history.latest
     assert latest is not None
     assert latest.loop_gap_active_max_us == 87
     assert latest.angle_age_ms == 12
+    assert latest.ads_success == 100
+    assert latest.ads_mutex_timeout == 2
+    assert latest.ads_i2c_error == 1
+    assert latest.ads_crc_error == 3
+    assert latest.ads_duplicate == 4
+    assert latest.ads_transient_drop == 5
     assert latest.command_rtt_ms == pytest.approx(37.4)
 
     history.append_packet(_health_packet(), host_time=datetime(2026, 6, 3, 12, 0, 1))
     assert history.latest is not None
     assert history.latest.loop_gap_active_max_us is None
+    assert history.latest.ads_crc_error is None
     assert history.latest.command_rtt_ms is None
 
 
@@ -85,3 +102,5 @@ def test_health_history_can_export_csv(tmp_path):
     assert text.splitlines()[0] == ",".join(CSV_COLUMNS)
     assert "2026-06-03T12:00:00.000" in text
     assert ",160," in text
+    assert "ads_crc_error" in text.splitlines()[0]
+    assert "ads_transient_drop" in text.splitlines()[0]

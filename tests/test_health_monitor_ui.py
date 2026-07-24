@@ -75,6 +75,9 @@ def test_health_monitor_page_is_available_after_baseline(monkeypatch):
     assert hasattr(window, "health_history")
     assert hasattr(window, "health_temp_value")
     assert hasattr(window, "health_heap_value")
+    assert hasattr(window, "health_ads_crc_value")
+    assert hasattr(window, "health_ads_duplicate_value")
+    assert hasattr(window, "health_ads_transient_value")
     assert hasattr(window, "health_clear_btn")
     assert hasattr(window, "health_export_csv_btn")
     assert hasattr(window, "health_save_png_btn")
@@ -161,12 +164,22 @@ def test_health_monitor_records_only_during_monitor_session_and_auto_saves(monke
     window.handle_health_packet(packet)
     window.handle_serial_data("LOOP_GAP_ACTIVE_MAX_US:87")
     window.handle_serial_data("ANGLE_AGE_MS:12")
+    window.handle_serial_data(
+        "ADS_HEALTH:SUCCESS=100,MUTEX_TIMEOUT=2,I2C_ERROR=1,"
+        "CRC_ERROR=3,DUPLICATE=4,TRANSIENT_DROP=5"
+    )
     window.command_rtt_tracker.record("DET?", now_s=10.0)
     window._finish_command_rtt("DET_ID:USV_DETECTOR", now_s=10.037)
 
     assert window.health_history.latest is not None
     assert window.health_history.latest.loop_gap_active_max_us == 87
     assert window.health_history.latest.angle_age_ms == 12
+    assert window.health_history.latest.ads_crc_error == 3
+    assert window.health_history.latest.ads_duplicate == 4
+    assert window.health_history.latest.ads_transient_drop == 5
+    assert window.health_ads_crc_value.text() == "3"
+    assert window.health_ads_duplicate_value.text() == "4"
+    assert window.health_ads_transient_value.text() == "5"
     assert window.health_history.latest.command_rtt_ms == pytest.approx(37.0)
     assert not hasattr(window, "health_table")
     assert window.health_temp_curve.last_data[0] == [0.0]
@@ -180,6 +193,8 @@ def test_health_monitor_records_only_during_monitor_session_and_auto_saves(monke
     csv_text = saved_files[0].read_text(encoding="utf-8-sig")
     assert "38.5" in csv_text
     assert "loop_gap_active_max_us" in csv_text
+    assert "ads_crc_error" in csv_text
+    assert ",3,4,5," in csv_text
     assert window.health_last_auto_csv_path == saved_files[0]
 
     window.deleteLater()
