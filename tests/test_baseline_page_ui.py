@@ -155,6 +155,47 @@ def test_spectro_page_records_jetson_compatible_transport_diagnostics(monkeypatc
     window.deleteLater()
 
 
+def test_spectro_spike_test_uses_session_scoped_counter_deltas(monkeypatch):
+    import src.ui.mixins.spectro_mixin as spectro_mixin
+
+    monkeypatch.setattr(spectro_mixin, "PYQTGRAPH_AVAILABLE", True)
+    monkeypatch.setattr(spectro_mixin, "pg", _FakePg)
+    _app()
+    window = MotorControlApp()
+    window.spectro_is_measuring = True
+    window._health_record_ads_counters(
+        {"crc_error": 5, "duplicate": 10, "transient_drop": 3}
+    )
+
+    window._spectro_start_spike_test()
+    assert window.spectro_spike_test.active is True
+    assert window.spectro_spike_status_value.text() == "测试中"
+    assert window.spectro_trace.session_id == window.spectro_spike_session_id
+
+    packet = {
+        "timestamp_ms": 1000,
+        "tca_channel": 2,
+        "status": 0x01,
+        "raw_code": 123,
+        "voltage": 1.000,
+    }
+    window.handle_spectro_packet(packet)
+    packet["timestamp_ms"] = 1050
+    packet["voltage"] = 0.979
+    window.handle_spectro_packet(packet)
+    window._health_record_ads_counters(
+        {"crc_error": 5, "duplicate": 12, "transient_drop": 4}
+    )
+    window._spectro_stop_spike_test()
+
+    assert window.spectro_spike_status_value.text() == "已结束"
+    assert window.spectro_spike_drop_value.text() == ">5 1 / >10 1 / >20 1"
+    assert window.spectro_spike_ads_value.text() == "CRC 0 / Dup 2 / Drop 1"
+    assert window.spectro_spike_export_btn.isEnabled()
+
+    window.deleteLater()
+
+
 def test_startup_does_not_override_qt_dpi_awareness():
     main_py = Path(__file__).resolve().parents[1] / "main.py"
     source = main_py.read_text(encoding="utf-8")

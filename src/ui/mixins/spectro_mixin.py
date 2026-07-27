@@ -29,6 +29,10 @@ from src.core.spectro_trace import (
     compare_spectro_csv,
     format_spectro_comparison,
 )
+from src.core.spectro_spike_test import (
+    SpectroSpikeTest,
+    build_spike_test_summary_csv,
+)
 try:
     import pyqtgraph as pg
     PYQTGRAPH_AVAILABLE = True
@@ -50,6 +54,8 @@ class SpectroMixin:
         self.spectro_data_log = self.spectro_trace.records
         self.spectro_latest_record: Optional[dict] = None
         self.spectro_last_export_path = ""
+        self.spectro_spike_test = SpectroSpikeTest()
+        self.spectro_spike_session_id = ""
         self.spectro_start_time: float = 0.0
         self.spectro_timer = QTimer(self)  # type: ignore[arg-type]
         self.spectro_timer.setTimerType(Qt.PreciseTimer)
@@ -75,6 +81,7 @@ class SpectroMixin:
         self._spectro_create_ads_config_group(ll)
         self._spectro_create_display_group(ll)
         self._spectro_create_measurement_group(ll)
+        self._spectro_create_spike_test_group(ll)
         self._spectro_create_control_buttons(ll)
         ll.addStretch(1)
         self._spectro_create_charts_group(rl)
@@ -146,6 +153,65 @@ class SpectroMixin:
         layout.addRow("接收间隔:", self.spectro_timing_value)
         layout.addRow("固件完整性:", self.spectro_integrity_value)
         group.setLayout(layout); parent_layout.addWidget(group)
+
+    def _spectro_create_spike_test_group(self, parent_layout):
+        group = QGroupBox("毛刺测试")
+        layout = QFormLayout()
+        layout.setSpacing(8)
+        self.spectro_spike_status_value = QLabel("未开始")
+        self.spectro_spike_time_value = QLabel("0.0 s / 0 点 / -- Hz")
+        self.spectro_spike_drop_value = QLabel(">5 0 / >10 0 / >20 0")
+        self.spectro_spike_max_value = QLabel("0.0 mV")
+        self.spectro_spike_ads_value = QLabel("CRC -- / Dup -- / Drop --")
+        for label in (
+            self.spectro_spike_status_value,
+            self.spectro_spike_time_value,
+            self.spectro_spike_drop_value,
+            self.spectro_spike_max_value,
+            self.spectro_spike_ads_value,
+        ):
+            label.setStyleSheet(
+                f"font-size: 13px; color: {COLOR_TEXT_SECONDARY};"
+            )
+
+        layout.addRow("状态:", self.spectro_spike_status_value)
+        layout.addRow("时长/样本:", self.spectro_spike_time_value)
+        layout.addRow("相邻下冲 (mV):", self.spectro_spike_drop_value)
+        layout.addRow("最大下冲:", self.spectro_spike_max_value)
+        layout.addRow("ADS 会话增量:", self.spectro_spike_ads_value)
+
+        buttons = QHBoxLayout()
+        self.spectro_spike_start_btn = QPushButton("开始测试")
+        self.spectro_spike_start_btn.setToolTip(
+            "清空当前分光图表，并以当前 ADS 累计计数作为本次测试基线。"
+        )
+        self.spectro_spike_start_btn.setStyleSheet(BUTTON_SUCCESS)
+        self.spectro_spike_start_btn.clicked.connect(self._spectro_start_spike_test)
+        self.spectro_spike_start_btn.setEnabled(False)
+
+        self.spectro_spike_stop_btn = QPushButton("结束测试")
+        self.spectro_spike_stop_btn.setStyleSheet(BUTTON_DANGER)
+        self.spectro_spike_stop_btn.clicked.connect(self._spectro_stop_spike_test)
+        self.spectro_spike_stop_btn.setEnabled(False)
+
+        self.spectro_spike_export_btn = QPushButton("导出结果")
+        self.spectro_spike_export_btn.setToolTip(
+            "导出与 ROS 网页一致的一行毛刺测试汇总 CSV；原始样本请使用“保存数据”。"
+        )
+        self.spectro_spike_export_btn.setStyleSheet(BUTTON_SECONDARY)
+        self.spectro_spike_export_btn.clicked.connect(
+            self._spectro_export_spike_test
+        )
+        self.spectro_spike_export_btn.setEnabled(False)
+        for button in (
+            self.spectro_spike_start_btn,
+            self.spectro_spike_stop_btn,
+            self.spectro_spike_export_btn,
+        ):
+            buttons.addWidget(button)
+        layout.addRow(buttons)
+        group.setLayout(layout)
+        parent_layout.addWidget(group)
 
     def _spectro_create_control_buttons(self, parent_layout):
         group = QGroupBox("操作控制"); layout = QVBoxLayout(); layout.setSpacing(8)
@@ -241,12 +307,15 @@ class SpectroMixin:
         self.spectro_trace.start_session()
         self.spectro_latest_record = None
         self.spectro_timer.start(100)
+        self._spectro_refresh_spike_test()
         self.log("分光信号开始采集")
         return True
 
     def _spectro_stop_measurement(self):
         if getattr(self, "baseline_is_running", False):
             self._baseline_finish_test(manual_stop=True, stop_owned_measurement=False)
+        if self.spectro_spike_test.active:
+            self._spectro_stop_spike_test()
         if self.spectro_timer.isActive():
             self.spectro_timer.stop()
         if self.serial_port and self.serial_port.is_open:
@@ -258,6 +327,7 @@ class SpectroMixin:
         self.spectro_start_btn.setText("开始采集")
         self.spectro_ref_btn.setEnabled(False)
         self.spectro_status_label.setText("已停止")
+        self._spectro_refresh_spike_test()
         self.log("分光信号停止采集")
 
     def _spectro_set_chart_points(self, value: int) -> None:
@@ -320,6 +390,11 @@ class SpectroMixin:
         self.spectro_timing_value.setText(
             f"Host Δ {_format_interval(host_delta)} / Device Δ {_format_interval(source_delta)}"
         )
+        self.spectro_spike_test.add_sample(
+            timestamp_ms=received_at_ms,
+            voltage=voltage,
+            valid=bool(status & 0x01),
+        )
         self._spectro_refresh_integrity_label()
 
         if hasattr(self, "handle_baseline_packet"):
@@ -346,8 +421,11 @@ class SpectroMixin:
         self.spectro_absorbance_data.clear()
         self.spectro_trace.clear()
         self.spectro_latest_record = None
+        self.spectro_spike_test.reset()
+        self.spectro_spike_session_id = ""
         self.spectro_timing_value.setText("Host Δ -- / Device Δ --")
         self._spectro_refresh_integrity_label()
+        self._spectro_refresh_spike_test()
         self._spectro_update_charts()
         self.log("分光数据已清除")
 
@@ -356,6 +434,8 @@ class SpectroMixin:
             self.spectro_voltage_curve.setData(self.spectro_voltage_data)
         if hasattr(self, "spectro_absorbance_curve"):
             self.spectro_absorbance_curve.setData(self.spectro_absorbance_data)
+        if self.spectro_spike_test.active:
+            self._spectro_refresh_spike_test()
 
     def _spectro_save_data(self):
         if not self.spectro_data_log:
@@ -405,10 +485,109 @@ class SpectroMixin:
         if not hasattr(self, "spectro_integrity_value"):
             return
         counters = getattr(self, "detector_ads_health", {})
+        self.spectro_spike_test.update_counters(counters)
         self.spectro_integrity_value.setText(
             f"CRC {_format_counter(counters.get('crc_error'))} / "
             f"Dup {_format_counter(counters.get('duplicate'))} / "
             f"Drop {_format_counter(counters.get('transient_drop'))}"
+        )
+        self._spectro_refresh_spike_test()
+
+    def _spectro_start_spike_test(self) -> None:
+        if not self.spectro_is_measuring:
+            QMessageBox.information(
+                self,
+                "毛刺测试",
+                "请先开始分光采集，再开始毛刺测试。",
+            )
+            return
+        self._spectro_clear_data()
+        started_at_ms = int(time.time() * 1000)
+        self.spectro_spike_session_id = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )[:-3]
+        self.spectro_start_time = started_at_ms / 1000.0
+        self.spectro_trace.start_session(self.spectro_spike_session_id)
+        self.spectro_spike_test.start(
+            started_at_ms=started_at_ms,
+            counters=getattr(self, "detector_ads_health", {}),
+        )
+        self._spectro_refresh_spike_test(now_ms=started_at_ms)
+        self.log("[毛刺测试] 已开始，会话计数已归零")
+
+    def _spectro_stop_spike_test(self) -> None:
+        if not self.spectro_spike_test.active:
+            return
+        self.spectro_spike_test.stop(
+            ended_at_ms=int(time.time() * 1000),
+            counters=getattr(self, "detector_ads_health", {}),
+        )
+        self._spectro_refresh_spike_test()
+        self.log("[毛刺测试] 已结束")
+
+    def _spectro_export_spike_test(self) -> None:
+        summary = self.spectro_spike_test.summary()
+        if summary.active:
+            QMessageBox.information(self, "毛刺测试", "请先结束测试再导出结果。")
+            return
+        if summary.sample_count <= 0 or not self.spectro_spike_session_id:
+            QMessageBox.warning(self, "毛刺测试", "没有可导出的毛刺测试结果。")
+            return
+        filename = f"spectro_spike_test_{self.spectro_spike_session_id}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出毛刺测试结果",
+            filename,
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            csv_text = build_spike_test_summary_csv(
+                summary,
+                session_id=self.spectro_spike_session_id,
+                transport_path="windows_direct",
+            )
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(csv_text)
+            self.log(f"[毛刺测试] 结果已保存至 {os.path.basename(path)}")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"无法导出毛刺测试结果: {exc}")
+
+    def _spectro_refresh_spike_test(self, now_ms: Optional[int] = None) -> None:
+        if not hasattr(self, "spectro_spike_status_value"):
+            return
+        summary = self.spectro_spike_test.summary(now_ms=now_ms)
+        if summary.active:
+            status = "测试中"
+        elif summary.started_at_ms is not None:
+            status = "已结束"
+        else:
+            status = "未开始"
+        if summary.counter_reset_detected:
+            status += "（ADS 计数器已重置）"
+        self.spectro_spike_status_value.setText(status)
+        self.spectro_spike_time_value.setText(
+            f"{summary.duration_s:.1f} s / {summary.sample_count} 点 / "
+            f"{_format_rate(summary.receive_rate_hz)}"
+        )
+        self.spectro_spike_drop_value.setText(
+            f">5 {summary.drop_count_5mv} / "
+            f">10 {summary.drop_count_10mv} / "
+            f">20 {summary.drop_count_20mv}"
+        )
+        self.spectro_spike_max_value.setText(f"{summary.max_down_mv:.2f} mV")
+        self.spectro_spike_ads_value.setText(
+            f"CRC {_format_counter(summary.ads_crc_error_delta)} / "
+            f"Dup {_format_counter(summary.ads_duplicate_delta)} / "
+            f"Drop {_format_counter(summary.ads_transient_drop_delta)}"
+        )
+        self.spectro_spike_start_btn.setEnabled(
+            self.spectro_is_measuring and not summary.active
+        )
+        self.spectro_spike_stop_btn.setEnabled(summary.active)
+        self.spectro_spike_export_btn.setEnabled(
+            not summary.active and summary.sample_count > 0
         )
 
 
@@ -418,3 +597,7 @@ def _format_interval(value) -> str:
 
 def _format_counter(value) -> str:
     return "--" if value is None else str(int(value))
+
+
+def _format_rate(value) -> str:
+    return "-- Hz" if value is None else f"{value:.1f} Hz"
