@@ -12,6 +12,8 @@ from typing import Mapping, Optional
 
 DROP_THRESHOLDS_V = (0.005, 0.010, 0.020)
 COUNTER_KEYS = ("crc_error", "duplicate", "transient_drop")
+SPIKE_TEST_DURATION_OPTIONS_S = (30, 120, 300, 600)
+DEFAULT_SPIKE_TEST_DURATION_S = 600
 _VOLTAGE_EPSILON_V = 1e-12
 
 SPIKE_TEST_SUMMARY_COLUMNS = [
@@ -20,6 +22,7 @@ SPIKE_TEST_SUMMARY_COLUMNS = [
     "started_at_ms",
     "ended_at_ms",
     "duration_s",
+    "target_duration_s",
     "sample_count",
     "receive_rate_hz",
     "drop_count_5mv",
@@ -39,6 +42,8 @@ class SpikeTestSummary:
     started_at_ms: Optional[int]
     ended_at_ms: Optional[int]
     duration_s: float
+    target_duration_s: int
+    remaining_s: float
     sample_count: int
     receive_rate_hz: Optional[float]
     drop_count_5mv: int
@@ -65,6 +70,7 @@ class SpectroSpikeTest:
         self._active = False
         self._started_at_ms: Optional[int] = None
         self._ended_at_ms: Optional[int] = None
+        self._target_duration_s = DEFAULT_SPIKE_TEST_DURATION_S
         self._sample_count = 0
         self._first_sample_at_ms: Optional[int] = None
         self._last_sample_at_ms: Optional[int] = None
@@ -78,15 +84,33 @@ class SpectroSpikeTest:
         self,
         *,
         started_at_ms: Optional[int] = None,
+        target_duration_s: int = DEFAULT_SPIKE_TEST_DURATION_S,
         counters: Optional[Mapping[str, int]] = None,
     ) -> None:
         self.reset()
+        numeric_duration_s = int(target_duration_s)
+        if numeric_duration_s <= 0:
+            raise ValueError("target_duration_s must be positive")
         self._active = True
         self._started_at_ms = int(
             started_at_ms if started_at_ms is not None else time.time() * 1000
         )
+        self._target_duration_s = numeric_duration_s
         self._counter_baseline = _normalize_counters(counters)
         self._counter_current = dict(self._counter_baseline)
+
+    @property
+    def deadline_ms(self) -> Optional[int]:
+        if self._started_at_ms is None:
+            return None
+        return self._started_at_ms + self._target_duration_s * 1000
+
+    def should_auto_stop(self, now_ms: Optional[int] = None) -> bool:
+        deadline_ms = self.deadline_ms
+        if not self._active or deadline_ms is None:
+            return False
+        current_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        return current_ms >= deadline_ms
 
     def add_sample(
         self,
@@ -103,6 +127,9 @@ class SpectroSpikeTest:
         except (TypeError, ValueError):
             return
         if not math.isfinite(numeric_voltage):
+            return
+        deadline_ms = self.deadline_ms
+        if deadline_ms is not None and numeric_timestamp > deadline_ms:
             return
 
         if self._previous_voltage is not None:
@@ -136,20 +163,39 @@ class SpectroSpikeTest:
             return
         if counters is not None:
             self._counter_current = _normalize_counters(counters)
-        self._ended_at_ms = int(
+        requested_end_ms = int(
             ended_at_ms if ended_at_ms is not None else time.time() * 1000
+        )
+        if self._started_at_ms is not None:
+            requested_end_ms = max(self._started_at_ms, requested_end_ms)
+        deadline_ms = self.deadline_ms
+        self._ended_at_ms = (
+            min(requested_end_ms, deadline_ms)
+            if deadline_ms is not None
+            else requested_end_ms
         )
         self._active = False
 
     def summary(self, now_ms: Optional[int] = None) -> SpikeTestSummary:
         effective_end_ms = self._ended_at_ms
         if self._active:
-            effective_end_ms = int(
+            requested_end_ms = int(
                 now_ms if now_ms is not None else time.time() * 1000
+            )
+            deadline_ms = self.deadline_ms
+            effective_end_ms = (
+                min(requested_end_ms, deadline_ms)
+                if deadline_ms is not None
+                else requested_end_ms
             )
         duration_s = 0.0
         if self._started_at_ms is not None and effective_end_ms is not None:
             duration_s = max(0.0, (effective_end_ms - self._started_at_ms) / 1000.0)
+        remaining_s = (
+            max(0.0, self._target_duration_s - duration_s)
+            if self._active
+            else 0.0
+        )
 
         receive_rate_hz = None
         if (
@@ -182,6 +228,8 @@ class SpectroSpikeTest:
             started_at_ms=self._started_at_ms,
             ended_at_ms=self._ended_at_ms,
             duration_s=duration_s,
+            target_duration_s=self._target_duration_s,
+            remaining_s=remaining_s,
             sample_count=self._sample_count,
             receive_rate_hz=receive_rate_hz,
             drop_count_5mv=self._drop_counts[0],
@@ -211,6 +259,7 @@ def build_spike_test_summary_csv(
             "started_at_ms": summary.started_at_ms,
             "ended_at_ms": summary.ended_at_ms,
             "duration_s": _csv_number(summary.duration_s),
+            "target_duration_s": summary.target_duration_s,
             "sample_count": summary.sample_count,
             "receive_rate_hz": _csv_number(summary.receive_rate_hz),
             "drop_count_5mv": summary.drop_count_5mv,
