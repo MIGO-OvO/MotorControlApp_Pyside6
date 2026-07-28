@@ -71,7 +71,11 @@ def test_spike_test_ignores_invalid_samples_and_marks_counter_reset():
 
 def test_spike_test_summary_csv_uses_cross_platform_columns():
     test = SpectroSpikeTest()
-    test.start(started_at_ms=1000, counters={"crc_error": 0})
+    test.start(
+        started_at_ms=1000,
+        target_duration_s=30,
+        counters={"crc_error": 0},
+    )
     test.add_sample(timestamp_ms=1000, voltage=1.0)
     test.stop(ended_at_ms=1100, counters={"crc_error": 0})
 
@@ -85,4 +89,34 @@ def test_spike_test_summary_csv_uses_cross_platform_columns():
     assert rows[0]["session_id"] == "windows-test"
     assert rows[0]["transport_path"] == "windows_direct"
     assert rows[0]["sample_count"] == "1"
+    assert rows[0]["target_duration_s"] == "30"
     assert "ads_transient_drop_delta" in rows[0]
+
+
+def test_spike_test_uses_a_fixed_deadline_and_ignores_late_samples():
+    test = SpectroSpikeTest()
+    test.start(
+        started_at_ms=1000,
+        target_duration_s=30,
+        counters={"crc_error": 0},
+    )
+    test.add_sample(timestamp_ms=1000, voltage=1.000)
+
+    assert test.deadline_ms == 31000
+    assert test.should_auto_stop(30999) is False
+    assert test.should_auto_stop(31000) is True
+
+    running = test.summary(now_ms=16000)
+    assert running.target_duration_s == 30
+    assert running.remaining_s == pytest.approx(15.0)
+    assert running.sample_count == 1
+
+    test.add_sample(timestamp_ms=30999, voltage=0.990)
+    test.add_sample(timestamp_ms=31001, voltage=0.900)
+
+    test.stop(ended_at_ms=32000, counters={"crc_error": 0})
+    completed = test.summary()
+    assert completed.ended_at_ms == 31000
+    assert completed.duration_s == pytest.approx(30.0)
+    assert completed.remaining_s == 0.0
+    assert completed.sample_count == 2

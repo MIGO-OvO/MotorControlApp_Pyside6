@@ -30,6 +30,8 @@ from src.core.spectro_trace import (
     format_spectro_comparison,
 )
 from src.core.spectro_spike_test import (
+    DEFAULT_SPIKE_TEST_DURATION_S,
+    SPIKE_TEST_DURATION_OPTIONS_S,
     SpectroSpikeTest,
     build_spike_test_summary_csv,
 )
@@ -56,6 +58,7 @@ class SpectroMixin:
         self.spectro_last_export_path = ""
         self.spectro_spike_test = SpectroSpikeTest()
         self.spectro_spike_session_id = ""
+        self.spectro_spike_auto_completed = False
         self.spectro_start_time: float = 0.0
         self.spectro_timer = QTimer(self)  # type: ignore[arg-type]
         self.spectro_timer.setTimerType(Qt.PreciseTimer)
@@ -174,8 +177,26 @@ class SpectroMixin:
                 f"font-size: 13px; color: {COLOR_TEXT_SECONDARY};"
             )
 
+        self.spectro_spike_duration_combo = QComboBox()
+        for duration_s in SPIKE_TEST_DURATION_OPTIONS_S:
+            self.spectro_spike_duration_combo.addItem(
+                _format_duration_option(duration_s),
+                duration_s,
+            )
+        default_index = self.spectro_spike_duration_combo.findData(
+            DEFAULT_SPIKE_TEST_DURATION_S
+        )
+        self.spectro_spike_duration_combo.setCurrentIndex(max(0, default_index))
+        self.spectro_spike_duration_combo.setToolTip(
+            "Windows 与 ROS 网页使用相同测试时长；开始后锁定，到时自动结束。"
+        )
+        self.spectro_spike_duration_combo.currentIndexChanged.connect(
+            lambda _index: self._spectro_refresh_spike_test()
+        )
+
         layout.addRow("状态:", self.spectro_spike_status_value)
-        layout.addRow("时长/样本:", self.spectro_spike_time_value)
+        layout.addRow("测试时长:", self.spectro_spike_duration_combo)
+        layout.addRow("进度/样本:", self.spectro_spike_time_value)
         layout.addRow("相邻下冲 (mV):", self.spectro_spike_drop_value)
         layout.addRow("最大下冲:", self.spectro_spike_max_value)
         layout.addRow("ADS 会话增量:", self.spectro_spike_ads_value)
@@ -423,6 +444,7 @@ class SpectroMixin:
         self.spectro_latest_record = None
         self.spectro_spike_test.reset()
         self.spectro_spike_session_id = ""
+        self.spectro_spike_auto_completed = False
         self.spectro_timing_value.setText("Host Δ -- / Device Δ --")
         self._spectro_refresh_integrity_label()
         self._spectro_refresh_spike_test()
@@ -503,6 +525,7 @@ class SpectroMixin:
             return
         self._spectro_clear_data()
         started_at_ms = int(time.time() * 1000)
+        target_duration_s = int(self.spectro_spike_duration_combo.currentData())
         self.spectro_spike_session_id = datetime.now().strftime(
             "%Y%m%d_%H%M%S_%f"
         )[:-3]
@@ -510,20 +533,41 @@ class SpectroMixin:
         self.spectro_trace.start_session(self.spectro_spike_session_id)
         self.spectro_spike_test.start(
             started_at_ms=started_at_ms,
+            target_duration_s=target_duration_s,
             counters=getattr(self, "detector_ads_health", {}),
         )
         self._spectro_refresh_spike_test(now_ms=started_at_ms)
-        self.log("[毛刺测试] 已开始，会话计数已归零")
+        self.log(
+            f"[毛刺测试] 已开始，目标 {_format_duration_option(target_duration_s)}，"
+            "会话计数已归零"
+        )
 
     def _spectro_stop_spike_test(self) -> None:
+        self._spectro_finish_spike_test()
+
+    def _spectro_finish_spike_test(
+        self,
+        *,
+        ended_at_ms: Optional[int] = None,
+        auto_completed: bool = False,
+    ) -> None:
         if not self.spectro_spike_test.active:
             return
         self.spectro_spike_test.stop(
-            ended_at_ms=int(time.time() * 1000),
+            ended_at_ms=(
+                ended_at_ms
+                if ended_at_ms is not None
+                else int(time.time() * 1000)
+            ),
             counters=getattr(self, "detector_ads_health", {}),
         )
+        self.spectro_spike_auto_completed = auto_completed
         self._spectro_refresh_spike_test()
-        self.log("[毛刺测试] 已结束")
+        self.log(
+            "[毛刺测试] 已按设定时长自动结束"
+            if auto_completed
+            else "[毛刺测试] 已手动结束"
+        )
 
     def _spectro_export_spike_test(self) -> None:
         summary = self.spectro_spike_test.summary()
@@ -557,18 +601,41 @@ class SpectroMixin:
     def _spectro_refresh_spike_test(self, now_ms: Optional[int] = None) -> None:
         if not hasattr(self, "spectro_spike_status_value"):
             return
+        current_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        if self.spectro_spike_test.should_auto_stop(current_ms):
+            self._spectro_finish_spike_test(
+                ended_at_ms=self.spectro_spike_test.deadline_ms,
+                auto_completed=True,
+            )
+            return
         summary = self.spectro_spike_test.summary(now_ms=now_ms)
         if summary.active:
             status = "测试中"
         elif summary.started_at_ms is not None:
-            status = "已结束"
+            status = (
+                "已完成（到时自动结束）"
+                if self.spectro_spike_auto_completed
+                else "已结束"
+            )
         else:
             status = "未开始"
         if summary.counter_reset_detected:
             status += "（ADS 计数器已重置）"
         self.spectro_spike_status_value.setText(status)
+        selected_duration_s = int(self.spectro_spike_duration_combo.currentData())
+        target_duration_s = (
+            summary.target_duration_s
+            if summary.started_at_ms is not None
+            else selected_duration_s
+        )
+        remaining_s = (
+            summary.remaining_s
+            if summary.started_at_ms is not None
+            else float(selected_duration_s)
+        )
         self.spectro_spike_time_value.setText(
-            f"{summary.duration_s:.1f} s / {summary.sample_count} 点 / "
+            f"{summary.duration_s:.1f}/{target_duration_s} s · "
+            f"剩余 {remaining_s:.1f} s · {summary.sample_count} 点 / "
             f"{_format_rate(summary.receive_rate_hz)}"
         )
         self.spectro_spike_drop_value.setText(
@@ -589,6 +656,7 @@ class SpectroMixin:
         self.spectro_spike_export_btn.setEnabled(
             not summary.active and summary.sample_count > 0
         )
+        self.spectro_spike_duration_combo.setEnabled(not summary.active)
 
 
 def _format_interval(value) -> str:
@@ -601,3 +669,9 @@ def _format_counter(value) -> str:
 
 def _format_rate(value) -> str:
     return "-- Hz" if value is None else f"{value:.1f} Hz"
+
+
+def _format_duration_option(duration_s: int) -> str:
+    if duration_s % 60 == 0:
+        return f"{duration_s // 60} 分钟"
+    return f"{duration_s} 秒"

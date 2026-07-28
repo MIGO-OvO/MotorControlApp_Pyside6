@@ -163,6 +163,12 @@ def test_spectro_spike_test_uses_session_scoped_counter_deltas(monkeypatch):
     _app()
     window = MotorControlApp()
     window.spectro_is_measuring = True
+    assert [
+        window.spectro_spike_duration_combo.itemData(index)
+        for index in range(window.spectro_spike_duration_combo.count())
+    ] == [30, 120, 300, 600]
+    assert window.spectro_spike_duration_combo.currentData() == 600
+    window.spectro_spike_duration_combo.setCurrentIndex(0)
     window._health_record_ads_counters(
         {"crc_error": 5, "duplicate": 10, "transient_drop": 3}
     )
@@ -171,6 +177,8 @@ def test_spectro_spike_test_uses_session_scoped_counter_deltas(monkeypatch):
     assert window.spectro_spike_test.active is True
     assert window.spectro_spike_status_value.text() == "测试中"
     assert window.spectro_trace.session_id == window.spectro_spike_session_id
+    assert window.spectro_spike_test.summary().target_duration_s == 30
+    assert window.spectro_spike_duration_combo.isEnabled() is False
 
     packet = {
         "timestamp_ms": 1000,
@@ -192,7 +200,29 @@ def test_spectro_spike_test_uses_session_scoped_counter_deltas(monkeypatch):
     assert window.spectro_spike_drop_value.text() == ">5 1 / >10 1 / >20 1"
     assert window.spectro_spike_ads_value.text() == "CRC 0 / Dup 2 / Drop 1"
     assert window.spectro_spike_export_btn.isEnabled()
+    assert window.spectro_spike_duration_combo.isEnabled()
 
+    window.deleteLater()
+
+
+def test_spectro_spike_test_stops_automatically_at_selected_duration(monkeypatch):
+    import src.ui.mixins.spectro_mixin as spectro_mixin
+
+    monkeypatch.setattr(spectro_mixin, "PYQTGRAPH_AVAILABLE", True)
+    monkeypatch.setattr(spectro_mixin, "pg", _FakePg)
+    _app()
+    window = MotorControlApp()
+    window.spectro_is_measuring = True
+    window.spectro_spike_duration_combo.setCurrentIndex(0)
+    window._spectro_start_spike_test()
+
+    deadline_ms = window.spectro_spike_test.deadline_ms
+    assert deadline_ms is not None
+    window._spectro_refresh_spike_test(now_ms=deadline_ms)
+
+    assert window.spectro_spike_test.active is False
+    assert window.spectro_spike_status_value.text() == "已完成（到时自动结束）"
+    assert window.spectro_spike_duration_combo.isEnabled()
     window.deleteLater()
 
 
