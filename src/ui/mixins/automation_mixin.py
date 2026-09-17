@@ -166,6 +166,14 @@ class AutomationMixin:
         self.loop_entry.setToolTip("0 = 无限循环")
         self.loop_entry.setFixedWidth(100)
 
+        pump_speed_label = QLabel("进样泵联动转速:")
+        self.auto_pump_speed_spinbox = QSpinBox()
+        self.auto_pump_speed_spinbox.setRange(1, 100)
+        self.auto_pump_speed_spinbox.setValue(60)
+        self.auto_pump_speed_spinbox.setSuffix("%")
+        self.auto_pump_speed_spinbox.setToolTip("自动化启动时开启进样泵，结束、停止或异常时自动关闭")
+        self.auto_pump_speed_spinbox.setFixedWidth(90)
+
         self.start_auto_btn = QPushButton("开始执行")
         self.start_auto_btn.setStyleSheet(BUTTON_SUCCESS)
         self.start_auto_btn.setFont(QFont("Microsoft YaHei", 16))
@@ -181,6 +189,9 @@ class AutomationMixin:
 
         exec_layout.addWidget(loop_label)
         exec_layout.addWidget(self.loop_entry)
+        exec_layout.addSpacing(12)
+        exec_layout.addWidget(pump_speed_label)
+        exec_layout.addWidget(self.auto_pump_speed_spinbox)
         exec_layout.addStretch()
         exec_layout.addWidget(self.start_auto_btn)
         exec_layout.addWidget(self.stop_auto_btn)
@@ -210,6 +221,8 @@ class AutomationMixin:
             self.stop_auto_btn.setEnabled(is_running)
         if hasattr(self, "loop_entry"):
             self.loop_entry.setEnabled(not is_running)
+        if hasattr(self, "auto_pump_speed_spinbox"):
+            self.auto_pump_speed_spinbox.setEnabled(not is_running)
         if hasattr(self, "edit_step_btn"):
             self.edit_step_btn.setEnabled(not is_running)
         if hasattr(self, "steps_table"):
@@ -264,11 +277,6 @@ class AutomationMixin:
                 if cfg.get("enable") == "E":
                     desc = f"{motor}:方向{cfg.get('direction', '?')} 速度{cfg.get('speed', '?')} 角度{cfg.get('angle', '?')}"
                     params_desc.append(desc)
-
-            # 添加进样泵信息
-            pump_cfg = step.get("pump", {})
-            if pump_cfg.get("enable", False):
-                params_desc.append(f"进样泵:{pump_cfg.get('speed', 0)}%")
 
             params_str = " | ".join(params_desc) if params_desc else "所有微泵脱机"
             interval_ms = step.get("interval", 0)
@@ -370,6 +378,7 @@ class AutomationMixin:
 
         loop_count = self.loop_entry.value()
         self.loop_count = loop_count
+        injection_pump_speed = self.auto_pump_speed_spinbox.value()
 
         self.running_mode = "auto"
         self.is_first_command = True
@@ -381,6 +390,7 @@ class AutomationMixin:
             loop_count=loop_count,
             serial_port=self.serial_port,
             serial_lock=self.serial_lock,
+            injection_pump_speed=injection_pump_speed,
         )
         self.automation_thread.set_pid_mode(self.auto_calibration_enabled)
         self.automation_thread.update_status.connect(self.log)
@@ -499,11 +509,6 @@ class AutomationMixin:
                 desc = f"{motor}:{cfg.get('direction', '?')}{cfg.get('speed', '?')}°"
                 params_desc.append(desc)
 
-        # 添加进样泵信息
-        pump_cfg = step.get("pump", {})
-        if pump_cfg.get("enable", False):
-            params_desc.append(f"进样泵:{pump_cfg.get('speed', 0)}%")
-
         item.setText(0, str(idx))
         item.setText(1, step.get("name", f"步骤 {idx}"))
         item.setText(2, " | ".join(params_desc) if params_desc else "所有微泵脱机")
@@ -517,7 +522,13 @@ class AutomationMixin:
 
         loop_count = self.loop_entry.value()
         self.loop_count = loop_count
-        self._preset_manager.save_auto_preset(name, self.automation_steps, loop_count)
+        injection_pump_speed = self.auto_pump_speed_spinbox.value()
+        self._preset_manager.save_auto_preset(
+            name,
+            self.automation_steps,
+            loop_count,
+            injection_pump_speed=injection_pump_speed,
+        )
         self.update_preset_combos()
         self.log(f"自动预设 '{name}' 已保存")
 
@@ -530,7 +541,21 @@ class AutomationMixin:
         if not preset_data:
             return
 
-        self.automation_steps = list(preset_data.get("steps", []))
+        self.automation_steps = []
+        legacy_pump_speed = None
+        for raw_step in preset_data.get("steps", []):
+            if not isinstance(raw_step, dict):
+                continue
+            step = dict(raw_step)
+            legacy_pump = step.pop("pump", None)
+            if legacy_pump_speed is None and isinstance(legacy_pump, dict):
+                try:
+                    speed = int(legacy_pump.get("speed", 0))
+                except (TypeError, ValueError):
+                    speed = 0
+                if legacy_pump.get("enable", False) and speed > 0:
+                    legacy_pump_speed = speed
+            self.automation_steps.append(step)
         try:
             self.loop_count = int(preset_data.get("loop_count", 1))
         except (TypeError, ValueError):
@@ -538,6 +563,13 @@ class AutomationMixin:
 
         if hasattr(self, "loop_entry"):
             self.loop_entry.setValue(self.loop_count)
+        if hasattr(self, "auto_pump_speed_spinbox"):
+            pump_speed = preset_data.get("injection_pump_speed", legacy_pump_speed)
+            if pump_speed is not None:
+                try:
+                    self.auto_pump_speed_spinbox.setValue(int(pump_speed))
+                except (TypeError, ValueError):
+                    pass
 
         self.refresh_automation_view_state()
         if self.steps_table.topLevelItemCount() > 0:

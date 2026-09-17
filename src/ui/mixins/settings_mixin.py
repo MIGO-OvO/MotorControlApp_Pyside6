@@ -49,6 +49,11 @@ class SettingsMixin:
                 "amplitude": self.calibration_amp_input.text(),
             }
         )
+        if hasattr(self, "auto_pump_speed_spinbox"):
+            self.settings_manager.set_section(
+                "automation",
+                {"injection_pump_speed": self.auto_pump_speed_spinbox.value()},
+            )
 
         # 保存 I2C 通道映射
         i2c_mapping = dict(DEFAULT_I2C_MAPPING)
@@ -131,6 +136,14 @@ class SettingsMixin:
                 self.auto_cal_switch.setChecked(cal_settings["enabled"])
             if "amplitude" in cal_settings:
                 self.calibration_amp_input.setText(cal_settings["amplitude"])
+
+            automation_settings = settings.get("automation", {})
+            if "injection_pump_speed" in automation_settings and hasattr(
+                self, "auto_pump_speed_spinbox"
+            ):
+                self.auto_pump_speed_spinbox.setValue(
+                    int(automation_settings["injection_pump_speed"])
+                )
 
             # 加载 I2C 通道映射
             i2c_mapping = settings.get("i2c_mapping", {})

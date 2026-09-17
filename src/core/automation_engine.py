@@ -32,6 +32,7 @@ class AutomationThread(QThread):
         loop_count: int,
         serial_port: serial.Serial,
         serial_lock: threading.Lock,
+        injection_pump_speed: int = 50,
     ):
         """
         初始化自动化线程
@@ -42,13 +43,23 @@ class AutomationThread(QThread):
             loop_count: 循环次数（0表示无限循环）
             serial_port: 串口对象
             serial_lock: 串口锁
+            injection_pump_speed: 自动化运行期间的进样泵联动转速
         """
         super().__init__()
         self.parent_ref = parent_ref
         self.steps = self._deep_copy_steps(steps)
+        for step in self.steps:
+            if isinstance(step, dict):
+                # ROS 当前使用任务级进样泵联动，旧的逐步骤配置不再参与执行。
+                step.pop("pump", None)
         self.loop_count = loop_count
         self.serial_port = serial_port
         self.lock = serial_lock
+        try:
+            speed = int(injection_pump_speed)
+        except (TypeError, ValueError):
+            speed = 0
+        self.injection_pump_speed = max(0, min(100, speed))
 
         self._running = threading.Event()
         self._running.set()
@@ -80,6 +91,9 @@ class AutomationThread(QThread):
     def run(self):
         """线程主循环"""
         try:
+            if not self._start_injection_pump():
+                return
+
             while self._running.is_set() and self._should_continue():
                 try:
                     if not self._running.is_set():
@@ -99,6 +113,37 @@ class AutomationThread(QThread):
         finally:
             self._cleanup_resources()
             self.finished.emit()
+
+    def _start_injection_pump(self) -> bool:
+        """在首个自动化步骤前启动任务级进样泵联动。"""
+        if self.injection_pump_speed <= 0:
+            self.error_occurred.emit("进样泵联动转速必须大于 0")
+            return False
+
+        try:
+            with self.lock:
+                if not self.serial_port or not self.serial_port.is_open:
+                    self.error_occurred.emit("串口连接已断开")
+                    return False
+                command = f"PUMP:SET:{self.injection_pump_speed}\r\n"
+                self.serial_port.write(command.encode("utf-8"))
+                self.serial_port.flush()
+
+            parent = self.parent_ref()
+            if parent:
+                try:
+                    if hasattr(parent, "_record_command_sent"):
+                        parent._record_command_sent(command)
+                    parent.log(f"进样泵已联动启动，转速: {self.injection_pump_speed}%")
+                except Exception:
+                    pass
+            return True
+        except (serial.SerialException, OSError) as e:
+            self.error_occurred.emit(f"进样泵启动失败: {str(e)}")
+            return False
+        except Exception as e:
+            self.error_occurred.emit(f"进样泵启动异常: {str(e)}")
+            return False
 
     def _should_continue(self) -> bool:
         """判断是否应该继续执行"""
