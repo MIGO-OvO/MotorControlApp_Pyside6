@@ -135,3 +135,20 @@ def test_serial_reader_parses_health_packet():
     assert parsed["loop_stack_hwm"] == 4096
     assert parsed["comms_stack_hwm"] == 6144
     assert parsed["sensors_stack_hwm"] == 3072
+
+
+@pytest.mark.parametrize('status', [0x10, 0x11])
+def test_split_single_byte_header_preserves_test_frame_but_never_marks_it_valid(status):
+    packet = _build_spectro_packet(42, 2, status, 123, 1.0)
+    for split in range(1, len(packet)):
+        reader = SerialReader(DummySerial())
+        packets = []
+        text = []
+        reader.spectro_packet_received.connect(packets.append)
+        reader.data_received.connect(text.append)
+        reader._process_data(packet[:split])
+        reader._process_data(packet[split:] + b'WATCHDOG_TRIPPED\n')
+        assert len(packets) == 1
+        assert packets[0]['simulated'] is True
+        assert packets[0]['valid'] is False
+        assert text == ['WATCHDOG_TRIPPED']

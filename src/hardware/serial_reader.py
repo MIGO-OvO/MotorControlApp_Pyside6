@@ -90,9 +90,11 @@ class SerialReader(QThread):
             header_info = self._find_header()
 
             if header_info is None:
-                # 没有找到帧头，全部作为文本处理
-                self._process_as_text(bytes(self.binary_buffer))
-                self.binary_buffer.clear()
+                # Preserve a possible first header byte across serial reads.
+                keep = 1 if self.binary_buffer[-1] == self.HEADER1 else 0
+                text_end = len(self.binary_buffer) - keep
+                self._process_as_text(bytes(self.binary_buffer[:text_end]))
+                del self.binary_buffer[:text_end]
                 break
 
             header_pos, packet_type, packet_size = header_info
@@ -262,6 +264,8 @@ class SerialReader(QThread):
             "status": status,
             "raw_code": raw_code,
             "voltage": voltage,
+            "valid": bool(status & 0x01) and not bool(status & 0x1E),
+            "simulated": bool(status & 0x10),
         }
         self.spectro_packet_received.emit(packet)
 

@@ -566,6 +566,10 @@ class MotorControlApp(
         Args:
             data: 接收到的文本数据行
         """
+        if data == 'WATCHDOG_TRIPPED' or data.startswith('WATCHDOG_ERR:'):
+            self.log('控制会话已锁存停止，请重新连接后重新发起任务')
+            self.close_serial()
+            return
         ads_health = parse_ads_health_line(data)
         if ads_health is not None:
             self._health_record_ads_counters(ads_health)
