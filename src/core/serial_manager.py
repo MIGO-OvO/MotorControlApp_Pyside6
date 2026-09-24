@@ -8,7 +8,7 @@ import threading
 from typing import Callable, List, Optional
 
 import serial
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from serial.tools import list_ports
 
 from ..config.constants import (
@@ -39,6 +39,8 @@ class SerialManager(QObject):
         self.serial_reader: Optional[SerialReader] = None
         self.serial_lock = threading.Lock()
         self._is_connected = False
+        self._control_keepalive_timer = QTimer(self)
+        self._control_keepalive_timer.timeout.connect(lambda: self.send_command('WATCHDOG:KEEPALIVE'))
 
     @property
     def is_connected(self) -> bool:
@@ -101,12 +103,18 @@ class SerialManager(QObject):
                 self.error_occurred.emit(f"检测装置握手失败: {identity}")
                 return False
 
+            if 'CAP=WATCHDOG1' not in identity:
+                self.serial_port.close()
+                self.serial_port = None
+                raise serial.SerialException('固件缺少 WATCHDOG1 失联保护，请成套更新')
+            self.serial_port.write(b'WATCHDOG:ARM\r\n')
             # 启动读取线程
             self.serial_reader = SerialReader(self.serial_port)
             self.serial_reader.data_received.connect(self._on_data_received)
             self.serial_reader.start()
 
             self._is_connected = True
+            self._control_keepalive_timer.start(500)
             self.connected.emit(port, baudrate)
             return True
 
@@ -165,6 +173,7 @@ class SerialManager(QObject):
 
     def disconnect_port(self) -> None:
         """断开串口连接"""
+        self._control_keepalive_timer.stop()
         with self.serial_lock:
             # 停止读取线程
             if self.serial_reader and self.serial_reader.isRunning():
@@ -174,6 +183,10 @@ class SerialManager(QObject):
             # 关闭串口
             if self.serial_port and self.serial_port.is_open:
                 try:
+                    try:
+                        self.serial_port.write(b'STOPALL\r\n')
+                    except (serial.SerialException, OSError):
+                        pass
                     self.serial_port.close()
                 except Exception as e:
                     print(f"关闭串口错误: {str(e)}")

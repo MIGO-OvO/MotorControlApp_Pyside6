@@ -16,7 +16,7 @@ import threading
 import serial
 from serial.tools import list_ports
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QMessageBox
 
 from src.hardware.serial_reader import SerialReader
@@ -75,6 +75,9 @@ class SerialMixin:
     def open_serial(self) -> None:
         """打开串口连接。"""
         try:
+            job = getattr(self, 'automation_thread', None)
+            if job is not None and job.isRunning():
+                raise serial.SerialException('旧自动化线程尚未结束，不能建立新控制会话')
             port = self.port_combo.currentText()
             baudrate = int(self.baud_combo.currentText())
             if not port:
@@ -100,6 +103,15 @@ class SerialMixin:
                 self.serial_port = None
                 raise serial.SerialException(f"检测装置握手失败: {identity}")
             self.log(f"检测装置已识别: {identity}")
+            if 'CAP=WATCHDOG1' not in identity:
+                self.serial_port.close()
+                self.serial_port = None
+                raise serial.SerialException('固件缺少 WATCHDOG1 失联保护，请成套更新')
+            self.serial_port.write(b'WATCHDOG:ARM\r\n')
+            if not hasattr(self, '_control_keepalive_timer'):
+                self._control_keepalive_timer = QTimer(self)
+                self._control_keepalive_timer.timeout.connect(self._send_control_keepalive)
+            self._control_keepalive_timer.start(500)
 
             self._closing = False
             self.serial_reader = SerialReader(self.serial_port)
@@ -149,7 +161,20 @@ class SerialMixin:
 
     def close_serial(self) -> None:
         """关闭串口连接。"""
+        if getattr(self, '_serial_close_in_progress', False):
+            return
+        self._serial_close_in_progress = True
+        try:
+            self._close_serial_session()
+        finally:
+            self._serial_close_in_progress = False
+
+    def _close_serial_session(self) -> None:
+        """Cancel callbacks before best-effort STOPALL and local port cleanup."""
         self._closing = True
+        if hasattr(self, '_control_keepalive_timer'):
+            self._control_keepalive_timer.stop()
+        self._stop_control_jobs()
 
         # 停止图表更新定时器
         try:
@@ -173,6 +198,7 @@ class SerialMixin:
         with self.serial_lock:
             if self.serial_port and self.serial_port.is_open:
                 try:
+                    self.serial_port.write(b'STOPALL\r\n')
                     self.serial_port.write(b"ANGLESTREAM_STOP\r\n")
                     self.serial_port.flush()
                     time.sleep(0.1)
@@ -256,6 +282,31 @@ class SerialMixin:
         except Exception as e:
             self.log(f"同步I2C映射失败: {e}")
 
+    def _send_control_keepalive(self):
+        with self.serial_lock:
+            if self.serial_port and self.serial_port.is_open:
+                try:
+                    self.serial_port.write(b'WATCHDOG:KEEPALIVE\r\n')
+                except (serial.SerialException, OSError):
+                    self._control_keepalive_timer.stop()
+                    self.log('控制心跳发送失败；设备将超时停机，需重新连接')
+
+    def _stop_control_jobs(self):
+        # Called before acquiring serial_lock; stop() may itself send stop bytes.
+        job = getattr(self, 'automation_thread', None)
+        if job is not None:
+            try:
+                job.stop()
+            except Exception as error:
+                self.log(f'停止自动化任务失败，继续关闭控制会话: {error}')
+        optimizer = getattr(self, 'pid_optimizer', None)
+        if optimizer is not None:
+            try:
+                optimizer.stop()
+            except Exception as error:
+                self.log(f'停止优化器失败，继续关闭控制会话: {error}')
+        self._single_test_active = False
+
 
     @staticmethod
     def _perform_handshake(conn: serial.Serial) -> tuple:
@@ -319,6 +370,11 @@ class SerialMixin:
         Returns:
             发送是否成功
         """
+        # Optimizer stop callbacks also use this method. During teardown the
+        # dedicated STOPALL write is authoritative; never recurse via a failed
+        # callback write or open a nested connection/error dialog.
+        if getattr(self, '_serial_close_in_progress', False):
+            return False
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.critical(self, "错误", "请先打开串口连接！")
             return False

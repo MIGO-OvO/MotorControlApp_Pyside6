@@ -414,7 +414,7 @@ class BaselineMixin:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
     def _baseline_is_valid_packet(self, status: int) -> bool:
-        return bool(status & 0x01) and not bool(status & 0x02) and not bool(status & 0x08)
+        return bool(status & 0x01) and not bool(status & 0x1E)
 
     def _baseline_reset_result_cards(self) -> None:
         for label in self.baseline_result_cards.values():

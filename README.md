@@ -2,6 +2,14 @@
 
 # 环境现场监测系统控制程序
 
+## safety1 固件兼容要求
+
+串口连接要求固件身份包含 `CAP=WATCHDOG1`；连接时 ARM（停止旧输出），Qt 定时器每 500 ms 发送控制心跳，关闭串口前发送 `STOPALL`。设备 3 秒无心跳后保持停机状态，不能靠迟到心跳自动续跑；重新连接后重新发起任务。窗口线程严重阻塞也可能触发保护，须进行台架测试。旧固件需成套更新，不能忽略握手拒绝。
+
+分光状态 bit4 标记 FULL 压测合成帧；解析、记录有效性、尖峰分析和基线有效性均排除测试帧。帧长与其他状态位不变。此版本未经过真实串口/执行器验收。
+
+无效/测试帧仅保留在带质量标记的原始诊断轨迹，不进入真实绘图/参考电压缓冲；CSV 信号统计按有效帧计算，原始帧数与传输时序统计不变。串口关闭防重入，取消回调在清理期间不能再次发送命令；写失败也继续尝试停止和释放端口。
+
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Code Style](https://img.shields.io/badge/Code%20Style-Black-black.svg)

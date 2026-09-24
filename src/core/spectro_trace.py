@@ -73,12 +73,14 @@ class SpectroTraceRecorder:
         status_bits = int(packet.get("status", 0))
         source_timestamp_ms = int(packet.get("timestamp_ms", 0))
         counters = ads_counters or {}
-        valid = bool(status_bits & 0x01)
+        valid = bool(status_bits & 0x01) and not bool(status_bits & 0x1E)
         i2c_error = bool(status_bits & 0x02)
         not_configured = bool(status_bits & 0x04)
         saturated = bool(status_bits & 0x08)
 
-        if valid:
+        if status_bits & 0x10:
+            status = "test_data"
+        elif valid:
             status = "acquiring"
         elif i2c_error:
             status = "i2c_error"
@@ -172,6 +174,7 @@ class SpectroTraceComparison:
 
 
 def summarize_spectro_csv(path: str | Path) -> SpectroTraceSummary:
+    """Keep raw-frame timing diagnostics, but calculate signal metrics on valid rows."""
     with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = set(reader.fieldnames or ())
@@ -184,7 +187,10 @@ def summarize_spectro_csv(path: str | Path) -> SpectroTraceSummary:
 
     received_times = _column_floats(rows, "received_at_ms")
     source_times = _column_ints(rows, "source_timestamp_ms")
-    voltages = _column_floats(rows, "voltage")
+    measured_rows = [
+        row for row in rows if str(row.get("valid", "")).strip().lower() in ("true", "1")
+    ]
+    voltages = _column_floats(measured_rows, "voltage")
     host_intervals = _positive_intervals(received_times)
     source_intervals = [
         delta

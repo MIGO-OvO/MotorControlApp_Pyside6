@@ -376,27 +376,38 @@ class SpectroMixin:
         voltage = float(packet.get("voltage", 0.0))
         raw_code = packet.get("raw_code", 0)
         status = int(packet.get("status", 0))
+        valid = bool(status & 0x01) and not bool(status & 0x1E)
 
-        self.spectro_voltage_data.append(voltage)
-        self.spectro_voltage_value.setText(f"{voltage:.4f} V")
+        # The plot buffer also supplies reference-voltage samples. Keep only
+        # real valid measurements there; retain every raw frame in the trace.
+        if valid:
+            self.spectro_voltage_data.append(voltage)
+            self.spectro_voltage_value.setText(f"{voltage:.4f} V")
 
-        if status & 0x02:
+        if status & 0x10:
+            self.spectro_status_label.setText("测试数据（不计入测量）")
+        elif status & 0x02:
             self.spectro_status_label.setText("I2C 错误")
+        elif status & 0x04:
+            self.spectro_status_label.setText("未配置（不计入测量）")
         elif status & 0x08:
             self.spectro_status_label.setText("数据饱和")
+        elif not valid:
+            self.spectro_status_label.setText("无效数据（不计入测量）")
         elif self.spectro_is_measuring:
             self.spectro_status_label.setText("采集中...")
 
-        absorbance = 0.0
-        if self.spectro_reference_voltage and self.spectro_reference_voltage > 1e-9:
-            transmittance = voltage / self.spectro_reference_voltage
-            absorbance = -np.log10(transmittance) if transmittance > 0 else 0.0
-            self.spectro_absorbance_value.setText(f"{absorbance:.4f}")
-        else:
-            self.spectro_absorbance_value.setText("N/A")
-
-        self.spectro_absorbance_data.append(absorbance)
-        self._spectro_trim_chart_data()
+        absorbance = float('nan')
+        if valid:
+            absorbance = 0.0
+            if self.spectro_reference_voltage and self.spectro_reference_voltage > 1e-9:
+                transmittance = voltage / self.spectro_reference_voltage
+                absorbance = -np.log10(transmittance) if transmittance > 0 else 0.0
+                self.spectro_absorbance_value.setText(f"{absorbance:.4f}")
+            else:
+                self.spectro_absorbance_value.setText("N/A")
+            self.spectro_absorbance_data.append(absorbance)
+            self._spectro_trim_chart_data()
 
         elapsed_s = received_at_s - self.spectro_start_time if self.spectro_start_time else 0
         self.spectro_latest_record = self.spectro_trace.append_packet(
@@ -414,7 +425,7 @@ class SpectroMixin:
         self.spectro_spike_test.add_sample(
             timestamp_ms=received_at_ms,
             voltage=voltage,
-            valid=bool(status & 0x01),
+            valid=valid,
         )
         self._spectro_refresh_integrity_label()
 

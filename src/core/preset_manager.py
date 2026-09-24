@@ -93,7 +93,13 @@ class PresetManager:
         preset_key = f"manual_{name}"
         return self.presets.get(preset_key)
 
-    def save_auto_preset(self, name: str, steps: List[Dict], loop_count: int) -> bool:
+    def save_auto_preset(
+        self,
+        name: str,
+        steps: List[Dict],
+        loop_count: int,
+        injection_pump_speed: Optional[int] = None,
+    ) -> bool:
         """
         保存自动化流程预设
 
@@ -101,12 +107,16 @@ class PresetManager:
             name: 预设名称
             steps: 步骤列表
             loop_count: 循环次数
+            injection_pump_speed: 自动化任务级进样泵联动转速
 
         Returns:
             是否保存成功
         """
         preset_key = f"auto_{name}"
-        self.presets[preset_key] = {"steps": [s.copy() for s in steps], "loop_count": loop_count}
+        preset = {"steps": [s.copy() for s in steps], "loop_count": loop_count}
+        if injection_pump_speed is not None:
+            preset["injection_pump_speed"] = max(1, min(100, int(injection_pump_speed)))
+        self.presets[preset_key] = preset
         return self.save_all()
 
     def load_auto_preset(self, name: str) -> Optional[Dict[str, Any]]:

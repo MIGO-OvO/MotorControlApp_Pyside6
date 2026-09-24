@@ -566,6 +566,10 @@ class MotorControlApp(
         Args:
             data: 接收到的文本数据行
         """
+        if data == 'WATCHDOG_TRIPPED' or data.startswith('WATCHDOG_ERR:'):
+            self.log('控制会话已锁存停止，请重新连接后重新发起任务')
+            self.close_serial()
+            return
         ads_health = parse_ads_health_line(data)
         if ads_health is not None:
             self._health_record_ads_counters(ads_health)
@@ -921,23 +925,7 @@ class MotorControlApp(
         self.active_motors = command_active_motors
         self.is_first_command = False
 
-        # ===== 进样泵控制指令 =====
-        pump_config = step_params.get("pump", {})
-        pump_enabled = pump_config.get("enable", False)
-        pump_speed = pump_config.get("speed", 0)
-
-        if pump_enabled and pump_speed > 0:
-            # 发送进样泵设置+启动指令
-            pump_cmd = f"PUMP:SET:{pump_speed}\r\n"
-            if self.serial_port and self.serial_port.is_open:
-                self.send_command(pump_cmd)
-                self.log(f"进样泵启动，转速: {pump_speed}%")
-        elif not pump_enabled:
-            # 自动模式下：如果步骤中明确禁用进样泵，发送停止指令
-            if self.running_mode == "auto":
-                pump_cmd = "PUMP:OFF\r\n"
-                if self.serial_port and self.serial_port.is_open:
-                    self.send_command(pump_cmd)
+        # 进样泵由自动化线程按任务级策略统一启停，不再读取逐步骤 pump 配置。
 
         # 只有在至少一个电机被启用时才添加回车换行符
         if command:
