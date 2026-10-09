@@ -185,13 +185,18 @@ class SettingsManager:
             offset: 偏移量（度）
         """
         current_offsets = self.get("motor.angle_offsets", {})
+        configured = self.get('motor.zero_configured_axes')
+        if configured is None:
+            configured = [axis for axis, value in current_offsets.items() if value != 0]
         current_offsets[motor] = offset
         self.set("motor.angle_offsets", current_offsets)
+        self.set('motor.zero_configured_axes', sorted(set(configured) | {motor}))
         self.save()
 
     def reset_angle_offsets(self) -> None:
         """重置所有零点偏移量为0"""
         self.set("motor.angle_offsets", {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0})
+        self.set('motor.zero_configured_axes', [])
         self.save()
 
     # ==================== 微泵备注管理 ====================

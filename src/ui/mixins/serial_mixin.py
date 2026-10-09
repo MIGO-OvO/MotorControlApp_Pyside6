@@ -114,6 +114,8 @@ class SerialMixin:
             self._control_keepalive_timer.start(500)
 
             self._closing = False
+            if hasattr(self, '_automation_feedback'):
+                self._automation_feedback.reset()
             self.serial_reader = SerialReader(self.serial_port)
             self.serial_reader.data_received.connect(
                 self.handle_serial_data, Qt.ConnectionType.QueuedConnection
@@ -174,6 +176,9 @@ class SerialMixin:
         self._closing = True
         if hasattr(self, '_control_keepalive_timer'):
             self._control_keepalive_timer.stop()
+        if hasattr(self, '_spectro_start_ack_timer'):
+            self._spectro_start_ack_timer.stop()
+        self._spectro_start_pending = False
         self._stop_control_jobs()
 
         # 停止图表更新定时器

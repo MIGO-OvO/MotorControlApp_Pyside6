@@ -285,6 +285,12 @@ class PIDDataMixin:
             if getattr(self, "_closing", False):
                 return
 
+            feedback = getattr(self, '_automation_feedback', None)
+            if feedback:
+                feedback.update_angles(angles)
+            job = getattr(self, 'automation_thread', None)
+            if job and getattr(job, 'preflight', None):
+                job.preflight.notify_angles(angles)
             current_angles = {}
             for motor in ["X", "Y", "Z", "A"]:
                 raw_angle = angles.get(motor, 0.0) % 360

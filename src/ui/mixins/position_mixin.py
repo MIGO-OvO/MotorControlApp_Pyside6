@@ -315,12 +315,16 @@ class PositionMixin:
 
     def set_current_as_zero(self, motor: str) -> None:
         """将当前角度设为零点"""
+        try:
+            offset = self._automation_feedback.read([motor])[motor] % 360
+        except Exception as exc:
+            self.log(f'不能保存零点，需新鲜有效角度: {exc}')
+            return
         if motor not in self.raw_angles:
             self.log(f"微泵{motor}原始角度数据不可用")
             return
 
         # 使用原始物理角度作为偏移量
-        offset = self.raw_angles[motor]
         self.angle_offsets[motor] = offset
 
         # 保存到配置

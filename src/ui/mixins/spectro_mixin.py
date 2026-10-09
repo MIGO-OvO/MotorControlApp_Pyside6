@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 import os
+import math
 import time
 from datetime import datetime
 from typing import Optional
@@ -60,6 +61,13 @@ class SpectroMixin:
         self.spectro_spike_session_id = ""
         self.spectro_spike_auto_completed = False
         self.spectro_start_time: float = 0.0
+        self._spectro_start_pending: bool = False
+        self._spectro_last_valid_at = None
+        self._spectro_wait_started_at = None
+        self._spectro_data_stale = False
+        self._spectro_start_ack_timer = QTimer(self)  # type: ignore[arg-type]
+        self._spectro_start_ack_timer.setSingleShot(True)
+        self._spectro_start_ack_timer.timeout.connect(self._spectro_start_ack_timeout)
         self.spectro_timer = QTimer(self)  # type: ignore[arg-type]
         self.spectro_timer.setTimerType(Qt.PreciseTimer)
         self.spectro_timer.timeout.connect(self._spectro_update_charts)
@@ -322,8 +330,17 @@ class SpectroMixin:
         self.send_command("ADSSTART\r\n")
         self.spectro_is_measuring = True
         self.spectro_start_btn.setText("停止采集")
-        self.spectro_ref_btn.setEnabled(True)
-        self.spectro_status_label.setText("采集中...")
+        self.spectro_ref_btn.setEnabled(False)
+        self._spectro_last_valid_at = None
+        self._spectro_wait_started_at = time.monotonic()
+        self._spectro_data_stale = False
+        self.spectro_voltage_data.clear()
+        self.spectro_absorbance_data.clear()
+        # 等待下位机 ADS_OK:START / ADS_ERR 应答；超时或失败时显式回退，
+        # 避免启动失败（如 ADS_ERR:I2C）被静默吞掉、界面一直停留在“采集中”。
+        self._spectro_start_pending = True
+        self.spectro_status_label.setText("启动中，等待下位机确认...")
+        self._spectro_start_ack_timer.start(2500)
         self.spectro_start_time = time.time()
         self.spectro_trace.start_session()
         self.spectro_latest_record = None
@@ -332,7 +349,46 @@ class SpectroMixin:
         self.log("分光信号开始采集")
         return True
 
+    def _spectro_handle_ads_reply(self, data: str) -> None:
+        """跟踪 ADSSTART 启动应答；仅在启动等待期内响应。"""
+        if not getattr(self, "_spectro_start_pending", False):
+            return
+        if data == "ADS_OK:START":
+            self._spectro_start_ack_timer.stop()
+            self._spectro_start_pending = False
+            self.spectro_status_label.setText("已启动，等待有效数据...")
+            self.log("分光采集启动确认: ADS_OK:START")
+        elif data.startswith("ADS_ERR"):
+            reason = data.split(":", 1)[1] if ":" in data else data
+            hint = ""
+            if reason == "I2C":
+                ch = self.spectro_tca_channel_spin.value()
+                addr = self.spectro_ads_addr_combo.currentText()
+                hint = (
+                    f"（下位机访问 TCA 通道 {ch} 上的 ADS122C04@{addr} 失败，"
+                    "请检查接线、通道号与地址）"
+                )
+            self._spectro_abort_start(f"ADS_ERR:{reason}{hint}")
+
+    def _spectro_start_ack_timeout(self) -> None:
+        if not getattr(self, "_spectro_start_pending", False):
+            return
+        self._spectro_abort_start("下位机未回应 ADSSTART（未收到 ADS_OK:START）")
+
+    def _spectro_abort_start(self, reason: str) -> None:
+        """启动失败：回退 UI 状态并给出明确原因。"""
+        self._spectro_start_ack_timer.stop()
+        self._spectro_start_pending = False
+        self.log(f"分光采集启动失败: {reason}")
+        self._spectro_stop_measurement()
+        self.spectro_status_label.setText(f"启动失败: {reason}")
+
     def _spectro_stop_measurement(self):
+        self._spectro_start_pending = False
+        self._spectro_wait_started_at = None
+        self._spectro_last_valid_at = None
+        if hasattr(self, "_spectro_start_ack_timer"):
+            self._spectro_start_ack_timer.stop()
         if getattr(self, "baseline_is_running", False):
             self._baseline_finish_test(manual_stop=True, stop_owned_measurement=False)
         if self.spectro_spike_test.active:
@@ -376,11 +432,15 @@ class SpectroMixin:
         voltage = float(packet.get("voltage", 0.0))
         raw_code = packet.get("raw_code", 0)
         status = int(packet.get("status", 0))
-        valid = bool(status & 0x01) and not bool(status & 0x1E)
+        valid = bool(status & 0x01) and not bool(status & 0x1E) and math.isfinite(voltage)
 
         # The plot buffer also supplies reference-voltage samples. Keep only
         # real valid measurements there; retain every raw frame in the trace.
         if valid:
+            self._spectro_last_valid_at = time.monotonic()
+            self._spectro_data_stale = False
+            if hasattr(self, 'spectro_ref_btn'):
+                self.spectro_ref_btn.setEnabled(self.spectro_is_measuring)
             self.spectro_voltage_data.append(voltage)
             self.spectro_voltage_value.setText(f"{voltage:.4f} V")
 
@@ -433,6 +493,8 @@ class SpectroMixin:
             self.handle_baseline_packet(packet, voltage, status)
 
     def _spectro_set_reference(self):
+        if self._spectro_check_freshness():
+            return
         if self.spectro_is_measuring and self.spectro_voltage_data:
             avg = float(np.mean(self.spectro_voltage_data[-10:]))
             self.spectro_reference_voltage = avg
@@ -462,7 +524,28 @@ class SpectroMixin:
         self._spectro_update_charts()
         self.log("分光数据已清除")
 
+    def _spectro_check_freshness(self) -> bool:
+        """START ACK proves configuration, not a live ADC measurement."""
+        if not self.spectro_is_measuring or getattr(self, '_spectro_start_pending', False):
+            return False
+        last = getattr(self, '_spectro_last_valid_at', None)
+        if last is None:
+            last = getattr(self, '_spectro_wait_started_at', None)
+        if last is None or time.monotonic() - last <= 3.0:
+            return False
+        if not getattr(self, '_spectro_data_stale', False):
+            self.spectro_voltage_data.clear()
+            self.spectro_absorbance_data.clear()
+            self.log('分光采集超时：3 秒无有效数据，请检查 ADS_HEALTH 与 ADSSTATUS?')
+        self._spectro_data_stale = True
+        self.spectro_ref_btn.setEnabled(False)
+        self.spectro_voltage_value.setText('无有效数据')
+        self.spectro_absorbance_value.setText('N/A')
+        self.spectro_status_label.setText('采集超时：无有效数据（检查 ADS_HEALTH）')
+        return True
+
     def _spectro_update_charts(self):
+        self._spectro_check_freshness()
         if hasattr(self, "spectro_voltage_curve"):
             self.spectro_voltage_curve.setData(self.spectro_voltage_data)
         if hasattr(self, "spectro_absorbance_curve"):

@@ -16,6 +16,7 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from src.config.constants import BUTTON_SECONDARY, BUTTON_TERTIARY, BUTTON_DANGER, BUTTON_SUCCESS
 from src.core.automation_engine import AutomationThread
+from src.core.automation_preflight import calibrated_offsets, normalize_preflight
 from src.ui.dialogs.motor_step_config import MotorStepConfig
 from src.ui.widgets import DragDropTreeWidget
 
@@ -197,6 +199,34 @@ class AutomationMixin:
         exec_layout.addWidget(self.stop_auto_btn)
         layout.addWidget(exec_frame)
 
+        preparation = QHBoxLayout()
+        self.auto_oil_axis = QComboBox()
+        self.auto_oil_axis.addItem('不分隔', None)
+        for axis in ('X', 'Y', 'Z', 'A'):
+            self.auto_oil_axis.addItem(axis, axis)
+        self.auto_separation_turns = QDoubleSpinBox()
+        self.auto_separation_turns.setRange(0, 10)
+        self.auto_separation_turns.setDecimals(2)
+        self.auto_separation_rpm = QDoubleSpinBox()
+        self.auto_separation_rpm.setRange(0.1, 20)
+        self.auto_separation_rpm.setValue(5)
+        for text, control in [('油相轴', self.auto_oil_axis),
+                              ('分隔圈数（0 跳过）', self.auto_separation_turns),
+                              ('分隔转速 rpm', self.auto_separation_rpm)]:
+            label = QLabel(text)
+            label.setBuddy(control)
+            preparation.addWidget(label)
+            preparation.addWidget(control)
+        layout.addLayout(preparation)
+        policy = self.settings_manager.get('automation.preflight', {})
+        try:
+            policy = normalize_preflight(policy)
+            self.auto_oil_axis.setCurrentIndex(self.auto_oil_axis.findData(policy['oil_axis']))
+            self.auto_separation_turns.setValue(policy['separation_turns'])
+            self.auto_separation_rpm.setValue(policy['separation_rpm'])
+        except ValueError:
+            pass  # Invalid saved policy stays disabled until explicitly configured.
+
         self.refresh_automation_view_state()
 
     def refresh_automation_view_state(self):
@@ -229,6 +259,9 @@ class AutomationMixin:
             self.steps_table.setEnabled(not is_running)
         if hasattr(self, "auto_preset_combo"):
             self.auto_preset_combo.setEnabled(not is_running)
+        for name in ('auto_oil_axis', 'auto_separation_turns', 'auto_separation_rpm'):
+            if hasattr(self, name):
+                getattr(self, name).setEnabled(not is_running)
 
     def edit_selected_step(self):
         """编辑当前选中的步骤。"""
@@ -392,6 +425,24 @@ class AutomationMixin:
             serial_lock=self.serial_lock,
             injection_pump_speed=injection_pump_speed,
         )
+        try:
+            policy = normalize_preflight({
+                'oil_axis': self.auto_oil_axis.currentData(),
+                'separation_turns': self.auto_separation_turns.value(),
+                'separation_rpm': self.auto_separation_rpm.value(),
+            })
+            zeros = calibrated_offsets({
+                'offsets': self.settings_manager.get('motor.angle_offsets', {}),
+                'configured_axes': self.settings_manager.get('motor.zero_configured_axes'),
+            })
+            self.automation_thread.configure_preflight(zeros, policy, self._automation_feedback)
+        except (ValueError, TypeError, AttributeError) as exc:
+            self.automation_thread = None
+            self._set_automation_running_state(False)
+            QMessageBox.warning(self, '自动化准备配置', str(exc))
+            return
+        self.settings_manager.set('automation.preflight', policy)
+        self.settings_manager.save()
         self.automation_thread.set_pid_mode(self.auto_calibration_enabled)
         self.automation_thread.update_status.connect(self.log)
         self.automation_thread.error_occurred.connect(self.handle_automation_error)
@@ -402,13 +453,20 @@ class AutomationMixin:
         self.status_bar.showMessage("自动化运行中...")
 
     def _on_automation_finished(self):
-        self.log("自动化流程已完成")
-        self.status_bar.showMessage("自动化已完成")
+        job = self.sender()
+        if job is not self.automation_thread:
+            return
+        failed = bool(job.terminal_error)
+        message = '自动化失败: ' + job.terminal_error if failed else '自动化流程已结束'
+        self.log(message)
+        self.status_bar.showMessage(message)
         self._set_automation_running_state(False)
-        QTimer.singleShot(500, self._cleanup_automation_thread)
+        QTimer.singleShot(500, lambda: self._cleanup_automation_thread(job))
 
-    def _cleanup_automation_thread(self):
+    def _cleanup_automation_thread(self, job=None):
         """延迟清理自动化线程"""
+        if job is not None and job is not self.automation_thread:
+            return
         if self.automation_thread:
             if self.automation_thread.isRunning():
                 self.automation_thread.stop()
@@ -423,10 +481,13 @@ class AutomationMixin:
         self._set_automation_running_state(False)
 
     def handle_automation_error(self, message):
-        QTimer.singleShot(0, lambda: self._handle_automation_error_delayed(message))
+        job = self.sender()
+        QTimer.singleShot(0, lambda: self._handle_automation_error_delayed(message, job))
 
-    def _handle_automation_error_delayed(self, message):
+    def _handle_automation_error_delayed(self, message, job=None):
         """延迟处理自动化错误"""
+        if job is not None and job is not self.automation_thread:
+            return
         self._set_automation_running_state(False)
         self.log(f"自动化错误: {message}")
         QMessageBox.warning(self, "自动化错误", message)
@@ -440,8 +501,9 @@ class AutomationMixin:
             if self.automation_thread.isRunning():
                 self.automation_thread.wait(2000)
             if self.automation_thread.isRunning():
-                self.automation_thread.terminate()
-                self.automation_thread.wait(500)
+                self.log('自动化停止尚未完成，禁止启动新任务')
+                self.status_bar.showMessage('正在停止自动化...')
+                return
 
             try:
                 self.automation_thread.update_status.disconnect()

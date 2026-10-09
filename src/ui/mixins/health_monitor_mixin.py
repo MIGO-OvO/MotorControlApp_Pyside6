@@ -303,6 +303,9 @@ class HealthMonitorMixin:
         """Handle ESP32 0xEE health packet and append a session sample."""
         if getattr(self, "_closing", False):
             return
+        feedback = getattr(self, '_automation_feedback', None)
+        if feedback:
+            feedback.update_health(packet)
         self.detector_health = dict(packet)
         if hasattr(self, "health_history") and self.health_recording_active:
             self.health_history.append_packet(packet, host_time=datetime.now())
