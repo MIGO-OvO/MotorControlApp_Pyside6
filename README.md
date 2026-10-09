@@ -10,6 +10,16 @@
 
 无效/测试帧仅保留在带质量标记的原始诊断轨迹，不进入真实绘图/参考电压缓冲；CSV 信号统计按有效帧计算，原始帧数与传输时序统计不变。串口关闭防重入，取消回调在清理期间不能再次发送命令；写失败也继续尝试停止和释放端口。
 
+### 自动化准备与分光新鲜度
+
+任务启动先确认进样 OFF，再用位置页已保存的相对零点归位、正转 360° 补偿；每轴必须收到匹配 PID_START、CMD_OK、PID_DONE，失败或超时停止。准备不覆盖零点、不发送 CAL。旧配置的默认 0° 不算已设置，需在新鲜角度反馈下明确点击「设为零点」；显式保存 0° 可用，「重置零点」清除确认标记。
+
+自动化页可选择油相轴、分隔圈数（0 跳过，最多 10）与转速（0.1–20 rpm）。分隔默认关闭，不再固定对 A 泵发 10 圈。启用时先用 R0 验证传感器，再以有限 J 和净正向角度进展证明完成；角度中断超过 1 秒、净进展停止超过 2 秒、健康源时钟超过 2.5 秒不推进或通道年龄失效时停止。全部准备完成后确认 PUMP:SET 应答，再执行正式步骤。准备固定 0.1° 定位容差，正式任务仍使用原 PID 精度。
+
+停止取消准备等待，并在串口锁内阻止迟到的运动/进样发送；旧任务的延迟界面清理不能停止新任务。停止输出仍是串口最佳努力发送，不能以写成功证明电气/机械停止；设备 watchdog 保留。分光 START ACK 只显示「等待有效数据」，3 秒无有效真实有限值帧时禁用参考电压，并显示采集超时；有效帧恢复显示。
+
+离线回归：`.venv/Scripts/python.exe -B -m pytest tests/test_automation_preflight.py tests/test_automation_injection_linkage.py tests/test_spectro_freshness.py -q`。准备逻辑移植自 ROS #83，桌面应用可独立运行、未增加依赖。仍需 ESP32 台架验证非零零点、360°/多圈运动、油相分隔、各阶段停止/断线、冻结传感器、进样时序与物理停机。
+
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Code Style](https://img.shields.io/badge/Code%20Style-Black-black.svg)

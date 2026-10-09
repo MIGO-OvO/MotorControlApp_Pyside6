@@ -96,6 +96,7 @@ from serial.tools import list_ports
 from src.config.constants import MACOS_STYLE, BUTTON_SECONDARY, BUTTON_TERTIARY, BUTTON_DANGER
 from src.config.settings import SettingsManager
 from src.core.automation_engine import AutomationThread
+from src.core.automation_preflight import PreflightFeedback
 from src.core.pid_analyzer import PIDAnalyzer, PIDStatus
 from src.core.pid_optimizer import PatternSearchOptimizer, PIDParams, TestResult
 from src.core.serial_diagnostics import (
@@ -207,6 +208,7 @@ class MotorControlApp(
         self.current_angles = {"X": 0, "Y": 0, "Z": 0, "A": 0}  # 添加当前角度记录
         self.angle_offsets = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}  # 零点偏移量
         self.raw_angles = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}  # 原始物理角度
+        self._automation_feedback = PreflightFeedback()
         self.pending_targets = {}
         self.expected_changes = {}  # 保持理论变化量
         self.realtime_deviation_history = {m: deque(maxlen=1000) for m in ["X", "Y", "Z", "A"]}
@@ -566,6 +568,11 @@ class MotorControlApp(
         Args:
             data: 接收到的文本数据行
         """
+        if getattr(self, '_closing', False):
+            return
+        self._automation_feedback.update_text(data)
+        if self.automation_thread:
+            self.automation_thread.notify_text(data)
         if data == 'WATCHDOG_TRIPPED' or data.startswith('WATCHDOG_ERR:'):
             self.log('控制会话已锁存停止，请重新连接后重新发起任务')
             self.close_serial()
@@ -648,6 +655,7 @@ class MotorControlApp(
             return
 
         # ADS122C04 响应
+        self._spectro_handle_ads_reply(data)
         if data.startswith("ADS_OK"):
             self.log(f"[ADS] {data}")
             return

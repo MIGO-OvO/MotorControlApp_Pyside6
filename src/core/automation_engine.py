@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional, Set
 import serial
 from PySide6.QtCore import QThread, Signal
 
+from src.core.automation_preflight import (
+    AutomationPreflight, PreflightCancelled, involved_axes, normalize_preflight,
+)
+
 
 class AutomationThread(QThread):
     """自动化执行线程"""
@@ -71,6 +75,61 @@ class AutomationThread(QThread):
         self._pid_complete_event = threading.Event()
         self._pending_pid_motors: Set[str] = set()  # 等待完成的 PID 电机
         self._pid_mode_enabled: Optional[bool] = None
+        self.on_startup_prepare = None
+        self.preflight = None
+        self._injection_prepared = False
+        self.terminal_error = ''
+
+    def configure_preflight(self, zeros, policy, feedback):
+        """Capture GUI configuration before the worker starts; never call UI in preparation."""
+        motors = involved_axes(self.steps)
+        if not motors or any(axis not in zeros for axis in motors):
+            raise ValueError('请先为任务泵组明确保存相对零点')
+        if self.injection_pump_speed <= 0:
+            raise ValueError('进样泵联动转速必须大于 0')
+        self._preflight_motors = motors
+        self._preflight_zeros = dict(zeros)
+        self._preflight_policy = normalize_preflight(policy)
+        self.preflight = AutomationPreflight(
+            self._send_preflight_command, self._check_active, feedback.read,
+            lambda: self.update_status.emit('自动化准备: ' + self.preflight.snapshot()['phase']),
+        )
+        self.on_startup_prepare = self._prepare_startup
+
+    def _check_active(self):
+        if not self._running.is_set() or not self.serial_port or not self.serial_port.is_open:
+            raise PreflightCancelled()
+
+    def _send_preflight_command(self, command, before_send=None):
+        with self.lock:
+            self._check_active()
+            if before_send:
+                before_send()
+            self.serial_port.write((command + '\r\n').encode())
+            self.serial_port.flush()
+        return True
+
+    def _prepare_startup(self, steps):
+        self.preflight.run(
+            self._preflight_motors, self._preflight_zeros, self._preflight_policy,
+            self.preflight.PID_PRECISION_DEG, (self.injection_pump_speed, 0.0),
+        )
+        with self.lock:
+            self._check_active()
+            self._injection_prepared = True
+            with self.preflight.lock:
+                self.preflight.state['active'] = False
+        return True
+
+    def notify_text(self, text):
+        if self.preflight and self.preflight.snapshot()['active']:
+            self.preflight.notify_text(text)
+        elif (text.startswith(('PID_FAIL:', 'PID_TIMEOUT:')) and
+              text.split(':', 1)[1].split(',')[0].split('=')[0].strip() in self._pending_pid_motors):
+            self.terminal_error = text
+            self._running.clear()
+            self._pid_complete_event.set()
+            self.error_occurred.emit(text)
 
     def _deep_copy_steps(self, steps: List[Dict]) -> List[Dict]:
         """
@@ -91,7 +150,11 @@ class AutomationThread(QThread):
     def run(self):
         """线程主循环"""
         try:
-            if not self._start_injection_pump():
+            self._check_active()
+            if self.on_startup_prepare and not self.on_startup_prepare(self.steps):
+                self.terminal_error = '自动化准备失败'
+                return
+            if not self._injection_prepared and not self._start_injection_pump():
                 return
 
             while self._running.is_set() and self._should_continue():
@@ -108,7 +171,13 @@ class AutomationThread(QThread):
                     self.error_occurred.emit(f"未知错误: {str(e)}")
                     break
 
+        except PreflightCancelled:
+            pass
         except Exception as e:
+            self.terminal_error = str(e)
+            if self.preflight:
+                with self.preflight.lock:
+                    self.preflight.state.update(active=False, phase='failed', error=str(e))
             self.error_occurred.emit(f"线程初始化失败: {str(e)}")
         finally:
             self._cleanup_resources()
@@ -122,6 +191,8 @@ class AutomationThread(QThread):
 
         try:
             with self.lock:
+                if not self._running.is_set():
+                    return False
                 if not self.serial_port or not self.serial_port.is_open:
                     self.error_occurred.emit("串口连接已断开")
                     return False
@@ -162,27 +233,24 @@ class AutomationThread(QThread):
                 break
 
             # 处理暂停
-            while self._paused.is_set():
+            while self._paused.is_set() and self._running.is_set():
                 time.sleep(0.1)
 
             self._current_step = step_idx
             progress = int((step_idx + 1) / len(self.steps) * 100)
             self.progress_updated.emit(progress)
 
+            pid_motors = self._get_step_active_motors(step) if self._is_pid_mode_enabled() else set()
+            self._pending_pid_motors = pid_motors.copy()
+            self._pid_complete_event.clear()
             if not self._send_step_command(step):
+                self._running.clear()
                 break
 
             # 检查是否开启 PID 模式，如果是则等待 PID 完成后再计时
-            if self._is_pid_mode_enabled():
-                pid_motors = self._get_step_active_motors(step)
-                if pid_motors:
-                    self._pending_pid_motors = pid_motors.copy()
-                    self._pid_complete_event.clear()
-
-                    if not self._wait_for_pid_complete():
-                        if self._running.is_set():
-                            self.update_status.emit(f"步骤 {step_idx + 1} PID 等待超时")
-                        break
+            if pid_motors and not self._wait_for_pid_complete():
+                self._running.clear()
+                break
 
             # PID 完成后（或非 PID 模式）开始计时间隔
             self._wait_interval(step.get("interval", 0))
@@ -229,7 +297,7 @@ class AutomationThread(QThread):
             True: 所有 PID 完成
             False: 超时或被中断
         """
-        start_time = time.time()
+        start_time = time.monotonic()
 
         while self._running.is_set() and self._pending_pid_motors:
             # 检查暂停
@@ -237,7 +305,8 @@ class AutomationThread(QThread):
                 time.sleep(0.1)
 
             # 检查超时
-            if time.time() - start_time > self.PID_WAIT_TIMEOUT:
+            if time.monotonic() - start_time > self.PID_WAIT_TIMEOUT:
+                self.terminal_error = 'PID 等待超时'
                 self.error_occurred.emit(
                     f"PID 等待超时 ({self.PID_WAIT_TIMEOUT}s)，未完成电机: {self._pending_pid_motors}"
                 )
@@ -373,7 +442,7 @@ class AutomationThread(QThread):
 
         # 检查暂停状态
         check_pause_interval = 0.005
-        while self._paused.is_set():
+        while self._paused.is_set() and self._running.is_set():
             t1 = get_time()
             time.sleep(check_pause_interval)
             deadline += get_time() - t1
@@ -385,6 +454,8 @@ class AutomationThread(QThread):
                 if self.serial_port and self.serial_port.is_open:
                     try:
                         # 停止进样泵
+                        self.serial_port.write(b"STOPALL\r\n")
+                        self.serial_port.flush()
                         self.serial_port.write(b"PUMP:OFF\r\n")
                         self.serial_port.flush()
                         # 先停止 PID 定位模式
@@ -403,12 +474,17 @@ class AutomationThread(QThread):
         """安全停止线程"""
         self._running.clear()
         self._paused.clear()
+        if self.preflight:
+            self.preflight.cancel()
+        self._pid_complete_event.set()
 
         try:
             with self.lock:
                 if self.serial_port and self.serial_port.is_open:
                     try:
                         # 停止进样泵
+                        self.serial_port.write(b"STOPALL\r\n")
+                        self.serial_port.flush()
                         self.serial_port.write(b"PUMP:OFF\r\n")
                         self.serial_port.flush()
                         # 先停止 PID 定位模式
