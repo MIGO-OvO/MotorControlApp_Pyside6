@@ -2,6 +2,12 @@
 
 # 环境现场监测系统控制程序
 
+## ADS 停止确认（2026-10 跨端修复）
+
+停止采集后等待真实 `ADS_OK:STOP`，2.5 秒无回包或 `ADS_ERR:STOP_I2C/STOP_MUTEX_TIMEOUT` 显示“停止未确认”，保留“重试停止”且禁止新 START。迟到 START 回包不能确认 STOP。串口断开取消等待定时器并保留未知锁，重连后需重新请求并确认停止，不自动续采；应配套新版 DetFirmware。这里的 2.5 秒是软件回执期限，不是物理停机合格线。
+
+回归：`python -B -m pytest tests/test_ads_stop_confirmation.py tests/test_serial_session_safety.py`，包括实际 Qt 定时器超时。完整离线回归不替代真实串口/台架测试；ROS 的超时热修复没有同时改变本桌面应用的 PID/油相预算。
+
 ## safety1 固件兼容要求
 
 串口连接要求固件身份包含 `CAP=WATCHDOG1`；连接时 ARM（停止旧输出），Qt 定时器每 500 ms 发送控制心跳，关闭串口前发送 `STOPALL`。设备 3 秒无心跳后保持停机状态，不能靠迟到心跳自动续跑；重新连接后重新发起任务。窗口线程严重阻塞也可能触发保护，须进行台架测试。旧固件需成套更新，不能忽略握手拒绝。
