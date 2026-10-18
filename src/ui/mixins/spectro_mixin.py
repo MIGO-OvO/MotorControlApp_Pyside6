@@ -62,6 +62,11 @@ class SpectroMixin:
         self.spectro_spike_auto_completed = False
         self.spectro_start_time: float = 0.0
         self._spectro_start_pending: bool = False
+        self._spectro_stop_pending = False
+        self._spectro_stop_unknown = False
+        self._spectro_stop_ack_timer = QTimer(self)
+        self._spectro_stop_ack_timer.setSingleShot(True)
+        self._spectro_stop_ack_timer.timeout.connect(self._spectro_stop_ack_timeout)
         self._spectro_last_valid_at = None
         self._spectro_wait_started_at = None
         self._spectro_data_stale = False
@@ -315,12 +320,17 @@ class SpectroMixin:
         )
 
     def _spectro_toggle_measurement(self):
-        if not self.spectro_is_measuring:
+        if getattr(self, '_spectro_stop_pending', False) or getattr(self, '_spectro_stop_unknown', False):
+            self._spectro_stop_measurement()
+        elif not self.spectro_is_measuring:
             self._spectro_start_measurement()
         else:
             self._spectro_stop_measurement()
 
     def _spectro_start_measurement(self) -> bool:
+        if getattr(self, '_spectro_stop_pending', False) or getattr(self, '_spectro_stop_unknown', False):
+            self.spectro_status_label.setText('停止尚未确认，请先重试停止')
+            return False
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.warning(self, "错误", "请先打开串口连接")
             return False
@@ -350,7 +360,16 @@ class SpectroMixin:
         return True
 
     def _spectro_handle_ads_reply(self, data: str) -> None:
-        """跟踪 ADSSTART 启动应答；仅在启动等待期内响应。"""
+        """启动、停止分别确认；停止轮询不能冒充硬件 POWERDOWN。"""
+        if getattr(self, '_spectro_stop_pending', False):
+            if data == 'ADS_OK:STOP' or data.startswith('ADS_ERR:'):
+                self._spectro_stop_ack_timer.stop()
+                self._spectro_stop_pending = False
+                self._spectro_stop_unknown = data != 'ADS_OK:STOP'
+                self.spectro_start_btn.setText('重试停止' if self._spectro_stop_unknown else '开始采集')
+                self.spectro_status_label.setText('停止未确认: ' + data if self._spectro_stop_unknown else '已确认停止')
+                self.log(self.spectro_status_label.text())
+            return
         if not getattr(self, "_spectro_start_pending", False):
             return
         if data == "ADS_OK:START":
@@ -375,6 +394,29 @@ class SpectroMixin:
             return
         self._spectro_abort_start("下位机未回应 ADSSTART（未收到 ADS_OK:START）")
 
+    def _spectro_stop_ack_timeout(self) -> None:
+        if not self._spectro_stop_pending:
+            return
+        self._spectro_stop_pending = False
+        self._spectro_stop_unknown = True
+        self.spectro_start_btn.setText('重试停止')
+        self.spectro_status_label.setText('停止未确认：未收到 ADS_OK:STOP')
+
+    def _spectro_connection_lost(self) -> None:
+        """A new serial connection must explicitly confirm ADSSTOP before START."""
+        self._spectro_start_ack_timer.stop()
+        self._spectro_stop_ack_timer.stop()
+        self.spectro_timer.stop()
+        self._spectro_start_pending = False
+        self._spectro_stop_pending = False
+        self._spectro_stop_unknown = True
+        self.spectro_is_measuring = False
+        self._spectro_last_valid_at = None
+        self._spectro_wait_started_at = None
+        self.spectro_ref_btn.setEnabled(False)
+        self.spectro_start_btn.setText('重试停止')
+        self.spectro_status_label.setText('连接已断开，采集停止未确认')
+
     def _spectro_abort_start(self, reason: str) -> None:
         """启动失败：回退 UI 状态并给出明确原因。"""
         self._spectro_start_ack_timer.stop()
@@ -384,6 +426,8 @@ class SpectroMixin:
         self.spectro_status_label.setText(f"启动失败: {reason}")
 
     def _spectro_stop_measurement(self):
+        self._spectro_stop_pending = True
+        self._spectro_stop_unknown = True
         self._spectro_start_pending = False
         self._spectro_wait_started_at = None
         self._spectro_last_valid_at = None
@@ -400,10 +444,11 @@ class SpectroMixin:
                 self.send_command("ADSSTOP\r\n")
             except Exception:
                 pass
+        self._spectro_stop_ack_timer.start(2500)
         self.spectro_is_measuring = False
-        self.spectro_start_btn.setText("开始采集")
+        self.spectro_start_btn.setText("重试停止")
         self.spectro_ref_btn.setEnabled(False)
-        self.spectro_status_label.setText("已停止")
+        self.spectro_status_label.setText("停止已请求，等待硬件确认...")
         self._spectro_refresh_spike_test()
         self.log("分光信号停止采集")
 

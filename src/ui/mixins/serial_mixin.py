@@ -179,6 +179,8 @@ class SerialMixin:
         if hasattr(self, '_spectro_start_ack_timer'):
             self._spectro_start_ack_timer.stop()
         self._spectro_start_pending = False
+        if hasattr(self, '_spectro_connection_lost'):
+            self._spectro_connection_lost()
         self._stop_control_jobs()
 
         # 停止图表更新定时器
