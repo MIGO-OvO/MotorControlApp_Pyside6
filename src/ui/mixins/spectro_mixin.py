@@ -362,7 +362,9 @@ class SpectroMixin:
     def _spectro_handle_ads_reply(self, data: str) -> None:
         """启动、停止分别确认；停止轮询不能冒充硬件 POWERDOWN。"""
         if getattr(self, '_spectro_stop_pending', False):
-            if data == 'ADS_OK:STOP' or data.startswith('ADS_ERR:'):
+            # ADSSTART/ADSCFG errors can arrive after STOP was requested.
+            # Only the current firmware's STOP-specific replies own this wait.
+            if data in ('ADS_OK:STOP', 'ADS_ERR:STOP_I2C', 'ADS_ERR:STOP_MUTEX_TIMEOUT'):
                 self._spectro_stop_ack_timer.stop()
                 self._spectro_stop_pending = False
                 self._spectro_stop_unknown = data != 'ADS_OK:STOP'

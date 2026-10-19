@@ -12,6 +12,7 @@ Note:
 
 import time
 import threading
+from functools import partial
 
 import serial
 from serial.tools import list_ports
@@ -116,26 +117,20 @@ class SerialMixin:
             self._closing = False
             if hasattr(self, '_automation_feedback'):
                 self._automation_feedback.reset()
-            self.serial_reader = SerialReader(self.serial_port)
-            self.serial_reader.data_received.connect(
-                self.handle_serial_data, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.pid_packet_received.connect(
-                self.handle_pid_packet, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.test_result_received.connect(
-                self.handle_test_result_packet, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.angle_packet_received.connect(
-                self.handle_angle_packet, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.spectro_packet_received.connect(
-                self.handle_spectro_packet, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.health_packet_received.connect(
-                self.handle_health_packet, Qt.ConnectionType.QueuedConnection
-            )
-            self.serial_reader.start()
+            reader = self.serial_reader = SerialReader(self.serial_port)
+            for signal, handler in (
+                (reader.data_received, self.handle_serial_data),
+                (reader.pid_packet_received, self.handle_pid_packet),
+                (reader.test_result_received, self.handle_test_result_packet),
+                (reader.angle_packet_received, self.handle_angle_packet),
+                (reader.spectro_packet_received, self.handle_spectro_packet),
+                (reader.health_packet_received, self.handle_health_packet),
+            ):
+                signal.connect(
+                    partial(self._deliver_serial_packet, reader, handler),
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            reader.start()
 
             if hasattr(self, "_chart_update_timer"):
                 self._chart_update_timer.start()
@@ -160,6 +155,12 @@ class SerialMixin:
             QMessageBox.critical(self, "串口错误", f"串口连接失败: {e}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"发生未知错误: {e}")
+
+    def _deliver_serial_packet(self, reader, handler, packet) -> None:
+        # disconnect()/wait() cannot remove calls already queued by Qt. Capture
+        # the source once at connect time, so reconnect cannot relabel old data.
+        if reader is self.serial_reader and not getattr(self, '_closing', False):
+            handler(packet)
 
     def close_serial(self) -> None:
         """关闭串口连接。"""
